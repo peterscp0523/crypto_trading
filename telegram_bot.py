@@ -1111,16 +1111,25 @@ class TradingBot:
                         self.log(f"{regime_emoji.get(market_regime['regime'])} 시장: {market_regime['regime'].upper()} "
                                 f"(신뢰도: {market_regime['strength']:.0f}%, BTC RSI: {market_regime['btc_rsi_1h']:.1f})")
 
-                # 약세장이 매우 강할 때 거래 중단
-                if not self.market_regime_detector.should_trade():
-                    self.log("⚠️ 강한 약세장 - 거래 대기")
-                    return
+                # 약세장이 매우 강할 때도 과매도 반등 매수 허용
+                bear_market_active = market_regime and market_regime['regime'] == 'bear' and market_regime['strength'] > 80
+                btc_rsi = market_regime.get('btc_rsi_1h', 50) if market_regime else 50
+
+                if bear_market_active:
+                    self.log(f"🐻 강한 약세장 (BTC RSI: {btc_rsi:.1f}) - 과매도 반등만 매수")
 
             status = self.get_current_status()
 
             # 멀티 코인 모드: 포지션 없을 때 TOP 5 코인 동시 매수 신호 체크
             if self.enable_multi_coin and not self.position and self.market_scanner:
                 best_buy_signal = self.scan_multi_coin_buy_signals()
+
+                # 약세장에서는 더 강한 신호 요구 (3/3 만족)
+                if bear_market_active and best_buy_signal:
+                    if best_buy_signal['buy_signal_count'] < 3:
+                        self.log(f"⚠️ 약세장: 매수 신호 약함 ({best_buy_signal['buy_signal_count']}/3) - 대기")
+                        best_buy_signal = None
+
                 if best_buy_signal:
                     # 가장 강한 매수 신호가 나온 코인으로 즉시 전환
                     if best_buy_signal['market'] != self.market:
