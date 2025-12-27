@@ -928,9 +928,9 @@ class TradingBot:
         if self.position:
             return False
 
-        # 10분마다 스캔 (API 부하 줄이기)
+        # 1분봉 대응: 2분마다 스캔 (1분봉 2번 체크 후 재평가)
         now = datetime.now()
-        if self.last_coin_scan and (now - self.last_coin_scan).total_seconds() < 600:
+        if self.last_coin_scan and (now - self.last_coin_scan).total_seconds() < 120:
             return False
 
         self.last_coin_scan = now
@@ -965,6 +965,67 @@ class TradingBot:
         except Exception as e:
             self.log(f"코인 전환 검토 실패: {e}")
             return False
+
+    def scan_multi_coin_buy_signals(self, top_n=5):
+        """멀티 코인 매수 신호 동시 스캔 (1분봉 최적화)
+
+        TOP 5 모멘텀 코인을 동시에 체크하여 가장 강한 매수 신호를 찾음
+        """
+        try:
+            # 모멘텀 랭킹 가져오기 (2분마다 갱신)
+            if (not self.market_scanner.last_scan_time or
+                (datetime.now() - self.market_scanner.last_scan_time).total_seconds() > 120):
+                self.market_scanner.scan_top_coins(top_n=20, min_volume_100m=50)
+
+            if not self.market_scanner.cached_rankings:
+                return None
+
+            # TOP N 코인의 매수 신호 체크
+            best_signal = None
+            best_score = 0
+
+            for coin in self.market_scanner.cached_rankings[:top_n]:
+                market = coin['market']
+
+                # 현재 마켓 임시 변경하여 신호 체크
+                original_market = self.market
+                self.market = market
+
+                # 다중 시간대 신호 분석
+                signals = self.get_multi_timeframe_signals()
+
+                # 마켓 복원
+                self.market = original_market
+
+                if not signals:
+                    continue
+
+                # 강한 매수 신호인지 체크
+                buy_signal_count = signals.get('buy_signal_count', 0)
+
+                # 매수 신호 점수: (매수신호 강도 * 10) + 모멘텀 점수
+                signal_score = (buy_signal_count * 10) + coin['score']
+
+                # 최소 2개 이상 시간대에서 매수 신호 필요
+                if buy_signal_count >= 2 and signal_score > best_score:
+                    best_score = signal_score
+                    best_signal = {
+                        'market': market,
+                        'name': coin['name'],
+                        'signals': signals,
+                        'buy_signal_count': buy_signal_count,
+                        'momentum_score': coin['score'],
+                        'total_score': signal_score
+                    }
+
+            if best_signal:
+                self.log(f"🎯 최강 매수 신호: {best_signal['name']} (신호: {best_signal['buy_signal_count']}/3, 모멘텀: {best_signal['momentum_score']})")
+
+            return best_signal
+
+        except Exception as e:
+            self.log(f"멀티 코인 스캔 실패: {e}")
+            return None
 
     def get_multi_timeframe_signals(self):
         """다중 시간대 신호 분석 (Tier 2 개선)
@@ -1055,13 +1116,24 @@ class TradingBot:
                     self.log("⚠️ 강한 약세장 - 거래 대기")
                     return
 
-            # 멀티 코인 모드: 코인 전환 검토
-            self.check_multi_coin_switch()
-
             status = self.get_current_status()
 
-            # Tier 2 개선: 다중 시간대 신호 사용
-            signals = self.get_multi_timeframe_signals()
+            # 멀티 코인 모드: 포지션 없을 때 TOP 5 코인 동시 매수 신호 체크
+            if self.enable_multi_coin and not self.position and self.market_scanner:
+                best_buy_signal = self.scan_multi_coin_buy_signals()
+                if best_buy_signal:
+                    # 가장 강한 매수 신호가 나온 코인으로 즉시 전환
+                    if best_buy_signal['market'] != self.market:
+                        self.log(f"💱 즉시 전환: {self.market.replace('KRW-', '')} → {best_buy_signal['name']} (매수신호 강도: {best_buy_signal['buy_signal_count']}/3)")
+                        self.market = best_buy_signal['market']
+                    signals = best_buy_signal['signals']
+                else:
+                    # 매수 신호 없으면 기존 로직 (코인 전환 검토)
+                    self.check_multi_coin_switch()
+                    signals = self.get_multi_timeframe_signals()
+            else:
+                # 포지션 있거나 싱글 코인 모드: 현재 코인만 체크
+                signals = self.get_multi_timeframe_signals()
 
             if not signals:
                 self.log("신호 없음")

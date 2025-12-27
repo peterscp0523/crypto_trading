@@ -15,7 +15,7 @@ class MarketScanner:
         self.upbit = upbit
         self.last_scan_time = None
         self.cached_rankings = []
-        self.scan_interval = 300  # 5분마다 스캔
+        self.scan_interval = 120  # 2분마다 스캔 (1분봉 대응)
 
     def get_krw_markets(self):
         """KRW 마켓 목록 가져오기"""
