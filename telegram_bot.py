@@ -6,6 +6,7 @@ from upbit_api import UpbitAPI
 from trading_indicators import TechnicalIndicators
 from advanced_strategy import AdvancedIndicators
 from market_scanner import MarketScanner
+from advanced_features import VolatilityManager, TimeBasedStrategy, AdvancedRiskManager
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -267,7 +268,7 @@ class TradingBot:
         }
     
     def buy(self, status, signals):
-        """매수 실행"""
+        """매수 실행 (고급 기능 통합)"""
         krw = status['krw']
         if krw < 5000:
             return False
@@ -275,17 +276,38 @@ class TradingBot:
         try:
             price = signals['price']
 
+            # === 시간대별 전략 체크 ===
+            session = TimeBasedStrategy.get_trading_session()
+            self.log(f"⏰ {session['name']} (공격성: {session['aggression']}, 변동성: {session['volatility']})")
+
+            # === 변동성 기반 포지션 사이징 ===
+            # 1시간봉으로 ATR 계산
+            candles_1h = self.upbit.get_candles(self.market, "minutes", 60, 30)
+            atr = VolatilityManager.calculate_atr(candles_1h, 14) if candles_1h else None
+
+            # 포지션 크기 결정
+            position_krw = VolatilityManager.get_position_size(krw, price, atr)
+
+            # 거래 기록 기반 포지션 비율 조정
+            if len(self.trade_history) >= 10:
+                optimal_ratio = AdvancedRiskManager.get_optimal_position_ratio(self.trade_history)
+                position_krw = int(krw * optimal_ratio)
+
+            # 최소 금액 체크
+            if position_krw < 5000:
+                position_krw = min(krw, 5000)
+
             # 드라이런 모드: 가상 거래
             if self.dry_run:
-                amount = krw / price
+                amount = position_krw / price
                 self.virtual_coin = amount
-                self.virtual_krw = 0
+                self.virtual_krw = krw - position_krw
                 self.virtual_avg_price = price
             # 실제 주문
             else:
-                result = self.upbit.order_market_buy(self.market, krw)
+                result = self.upbit.order_market_buy(self.market, position_krw)
 
-            amount = krw / price
+            amount = position_krw / price
             
             self.position = {
                 'buy_price': price,
@@ -309,9 +331,10 @@ class TradingBot:
 
             mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
             msg = f"{mode_prefix}🔵 <b>매수 완료</b>\n━━━━━━━━━━━━━━━━━\n\n"
-            msg += f"💰 금액: {krw:,.0f}원\n"
+            msg += f"⏰ {session['name']} (공격성: {session['aggression']})\n"
+            msg += f"💰 금액: {position_krw:,.0f}원 / {krw:,.0f}원 ({position_krw/krw*100:.0f}%)\n"
             msg += f"📊 가격: {price:,.0f}원\n"
-            msg += f"🪙 수량: {amount:.6f} ETH\n\n"
+            msg += f"🪙 수량: {amount:.6f} {self.market.split('-')[1]}\n\n"
 
             if signals.get('trend'):
                 trend = signals['trend']
@@ -494,10 +517,23 @@ class TradingBot:
 
                 self.log(f"포지션: {profit_rate*100:+.2f}% (최고: {self.position_peak_profit*100:+.2f}%) | 보유: {hold_hours:.1f}h")
 
-                # === 다층 익절 시스템 ===
-                # 1. 퀵 익절 (30분 이내 0.8% 이상)
-                if hold_minutes <= 30 and profit_rate >= self.quick_profit:
-                    self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%)")
+                # === 시간대별 파라미터 동적 조절 ===
+                session = TimeBasedStrategy.get_trading_session()
+                base_params = {
+                    'quick_profit': self.quick_profit,
+                    'take_profit_1': self.take_profit_1,
+                    'rsi_buy': self.rsi_buy
+                }
+                adjusted_params = TimeBasedStrategy.adjust_parameters(base_params, session)
+
+                # 조절된 파라미터 사용
+                quick_profit_adj = adjusted_params['quick_profit']
+                take_profit_1_adj = adjusted_params['take_profit_1']
+
+                # === 다층 익절 시스템 (시간대별 조절) ===
+                # 1. 퀵 익절 (30분 이내, 시간대별 조절)
+                if hold_minutes <= 30 and profit_rate >= quick_profit_adj:
+                    self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%, {session['name']})")
 
                 # 2. 최종 익절 (4%)
                 elif profit_rate >= self.take_profit_3:
@@ -507,9 +543,9 @@ class TradingBot:
                 elif profit_rate >= self.take_profit_2:
                     self.sell(status, signals, f"✅ 2차익절 ({profit_rate*100:.2f}%)")
 
-                # 4. 1차 익절 (1.5%)
-                elif profit_rate >= self.take_profit_1:
-                    self.sell(status, signals, f"✅ 1차익절 ({profit_rate*100:.2f}%)")
+                # 4. 1차 익절 (시간대별 조절)
+                elif profit_rate >= take_profit_1_adj:
+                    self.sell(status, signals, f"✅ 1차익절 ({profit_rate*100:.2f}%, {session['name']})")
 
                 # === 손절 ===
                 elif profit_rate <= self.stop_loss:
