@@ -18,24 +18,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
+      - name: Build and transfer Docker image
         run: |
+          # Docker 이미지 빌드
           docker build -t ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} .
-          docker save ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} -o crypto-bot.tar
-          ls -lh crypto-bot.tar
 
-      - name: Copy files to Oracle Cloud
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USERNAME }}
-          key: ${{ secrets.ORACLE_SSH_KEY }}
-          source: "crypto-bot.tar"
-          target: "/tmp/"
-          overwrite: true
+          # Docker 이미지를 tar로 저장
+          docker save ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} | gzip > crypto-bot.tar.gz
+
+          # 파일 크기 확인
+          ls -lh crypto-bot.tar.gz
+
+          # SSH 키 설정
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ORACLE_SSH_KEY }}" > ~/.ssh/oracle_key
+          chmod 600 ~/.ssh/oracle_key
+
+          # SCP로 파일 전송
+          scp -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no \
+            crypto-bot.tar.gz ${{ secrets.ORACLE_USERNAME }}@${{ secrets.ORACLE_HOST }}:/tmp/
 
       - name: Deploy to Oracle Cloud
         uses: appleboy/ssh-action@v1.0.3
@@ -44,8 +45,8 @@ jobs:
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
-            # Docker 이미지 로드
-            docker load -i /tmp/crypto-bot.tar
+            # Docker 이미지 로드 (압축 해제하면서)
+            gunzip -c /tmp/crypto-bot.tar.gz | docker load
 
             # 기존 컨테이너 중지 및 제거
             docker stop crypto-trading-bot || true
@@ -64,7 +65,7 @@ jobs:
               ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
 
             # 정리
-            rm /tmp/crypto-bot.tar
+            rm /tmp/crypto-bot.tar.gz
 
             # 오래된 이미지 정리
             docker image prune -f
