@@ -48,7 +48,7 @@ if __name__ == "__main__":
             telegram,
             config['market'],
             dry_run=False,  # 실전 모드
-            signal_timeframe=15,
+            signal_timeframe=1,  # 1분봉으로 변경 (빠른 반응)
             enable_multi_coin=True,  # 멀티 코인 모드
             db=db  # 데이터베이스 (선택적)
         )

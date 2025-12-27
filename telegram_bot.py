@@ -48,13 +48,13 @@ class TelegramBot:
 class TradingBot:
     """자동매매 봇"""
     
-    def __init__(self, upbit, telegram, market="KRW-ETH", dry_run=False, signal_timeframe=15,
+    def __init__(self, upbit, telegram, market="KRW-ETH", dry_run=False, signal_timeframe=1,
                  enable_multi_coin=False, db=None):
         self.upbit = upbit
         self.telegram = telegram
         self.market = market
         self.dry_run = dry_run  # 시뮬레이션 모드
-        self.signal_timeframe = signal_timeframe  # 신호 타임프레임 (5, 15, 60분)
+        self.signal_timeframe = signal_timeframe  # 신호 타임프레임 (1, 5, 15, 60분)
         self.enable_multi_coin = enable_multi_coin  # 멀티 코인 모드
         self.db = db  # 데이터베이스 매니저 (선택적)
 
@@ -149,7 +149,7 @@ class TradingBot:
 
         # 리소스 최적화: 신호 캐싱 (1 OCPU VM 대응)
         self.signal_cache = {}  # {timeframe: (timestamp, signals)}
-        self.signal_cache_duration = 30  # 30초간 캐시 유지
+        self.signal_cache_duration = 10  # 10초간 캐시 유지 (1분봉 대응)
 
         # 드라이런 모드용 가상 잔고
         if self.dry_run:
