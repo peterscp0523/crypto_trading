@@ -33,31 +33,40 @@ def load_env(filepath='.env'):
 def get_config():
     """
     설정 가져오기
+    환경변수 우선, .env 파일은 대체 수단으로 사용
     """
-    try:
-        env = load_env()
+    # 먼저 시스템 환경변수에서 가져오기 시도
+    config = {
+        'upbit_access_key': os.environ.get('UPBIT_ACCESS_KEY', ''),
+        'upbit_secret_key': os.environ.get('UPBIT_SECRET_KEY', ''),
+        'telegram_token': os.environ.get('TELEGRAM_TOKEN', ''),
+        'telegram_chat_id': os.environ.get('TELEGRAM_CHAT_ID', ''),
+        'market': os.environ.get('MARKET', 'KRW-ETH'),
+        'check_interval': int(os.environ.get('CHECK_INTERVAL', '300'))
+    }
 
-        config = {
-            'upbit_access_key': env.get('UPBIT_ACCESS_KEY', ''),
-            'upbit_secret_key': env.get('UPBIT_SECRET_KEY', ''),
-            'telegram_token': env.get('TELEGRAM_TOKEN', ''),
-            'telegram_chat_id': env.get('TELEGRAM_CHAT_ID', ''),
-            'market': env.get('MARKET', 'KRW-ETH'),
-            'check_interval': int(env.get('CHECK_INTERVAL', '300'))
-        }
+    # 환경변수가 없으면 .env 파일에서 로드
+    if not config['upbit_access_key']:
+        try:
+            env = load_env()
+            config = {
+                'upbit_access_key': env.get('UPBIT_ACCESS_KEY', ''),
+                'upbit_secret_key': env.get('UPBIT_SECRET_KEY', ''),
+                'telegram_token': env.get('TELEGRAM_TOKEN', ''),
+                'telegram_chat_id': env.get('TELEGRAM_CHAT_ID', ''),
+                'market': env.get('MARKET', 'KRW-ETH'),
+                'check_interval': int(env.get('CHECK_INTERVAL', '300'))
+            }
+        except FileNotFoundError:
+            print("⚠️  .env 파일이 없습니다. 환경변수를 사용합니다.")
 
-        # 필수 값 검증
-        required = ['upbit_access_key', 'upbit_secret_key', 'telegram_token', 'telegram_chat_id']
-        missing = [k for k in required if not config[k]]
+    # 필수 값 검증
+    required = ['upbit_access_key', 'upbit_secret_key', 'telegram_token', 'telegram_chat_id']
+    missing = [k for k in required if not config[k]]
 
-        if missing:
-            raise ValueError(f"필수 설정 누락: {', '.join(missing)}")
-
-        return config
-
-    except FileNotFoundError as e:
-        print(f"❌ {e}")
-        print("\n.env 파일 예시:")
+    if missing:
+        print(f"❌ 필수 설정 누락: {', '.join(missing)}")
+        print("\n환경변수 또는 .env 파일을 설정해주세요:")
         print("=" * 50)
         print("UPBIT_ACCESS_KEY=your_access_key")
         print("UPBIT_SECRET_KEY=your_secret_key")
@@ -66,10 +75,9 @@ def get_config():
         print("MARKET=KRW-ETH")
         print("CHECK_INTERVAL=300")
         print("=" * 50)
-        raise
-    except ValueError as e:
-        print(f"❌ {e}")
-        raise
+        raise ValueError(f"필수 설정 누락: {', '.join(missing)}")
+
+    return config
 
 
 if __name__ == "__main__":
