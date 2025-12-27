@@ -24,8 +24,8 @@ jobs:
       - name: Build Docker image
         run: |
           docker build -t ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} .
-          docker save ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} -o /tmp/crypto-bot.tar
-          ls -lh /tmp/crypto-bot.tar
+          docker save ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} -o crypto-bot.tar
+          ls -lh crypto-bot.tar
 
       - name: Copy files to Oracle Cloud
         uses: appleboy/scp-action@v0.1.7
@@ -33,8 +33,9 @@ jobs:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
-          source: "/tmp/crypto-bot.tar"
-          target: "/tmp"
+          source: "crypto-bot.tar"
+          target: "/tmp/"
+          overwrite: true
 
       - name: Deploy to Oracle Cloud
         uses: appleboy/ssh-action@v1.0.3
