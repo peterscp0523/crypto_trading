@@ -42,29 +42,5 @@ output "github_secrets_file" {
 
 output "next_steps" {
   description = "다음 단계 안내"
-  value = <<-EOT
-
-  ✅ Autonomous Database 생성 완료!
-
-  📋 다음 단계:
-
-  1. Wallet 파일 확인:
-     ${local_file.wallet_zip.filename}
-
-  2. GitHub Secrets 설정:
-     cat ${local_file.github_secrets.filename}
-
-     위 파일 내용을 GitHub Repository Settings > Secrets and variables > Actions에 추가
-
-  3. 데이터베이스 초기화:
-     cd ${path.module}
-     ./init_database.sh
-
-  4. 배포:
-     git push origin main
-
-  🔗 Service Console:
-     ${oci_database_autonomous_database.crypto_trading_db.service_console_url}
-
-  EOT
+  value = "✅ 데이터베이스 생성 완료! GitHub Secrets 파일을 확인하세요: ${local_file.github_secrets.filename}"
 }

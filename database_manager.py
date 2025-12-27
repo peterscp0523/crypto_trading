@@ -6,7 +6,7 @@ import os
 import json
 from datetime import datetime, timedelta
 import sqlite3  # 로컬 개발용
-# Oracle DB는 cx_Oracle 사용 (배포 시)
+# Oracle DB는 oracledb 사용 (배포 시)
 
 
 class DatabaseManager:
@@ -22,12 +22,39 @@ class DatabaseManager:
         if use_oracle:
             # Oracle Cloud Autonomous Database 연결
             try:
-                import cx_Oracle
-                self.conn = cx_Oracle.connect(
-                    user=os.environ.get('ORACLE_DB_USER', 'ADMIN'),
-                    password=os.environ.get('ORACLE_DB_PASSWORD'),
-                    dsn=os.environ.get('ORACLE_DB_DSN')
-                )
+                import oracledb
+                import base64
+
+                # Wallet 설정
+                wallet_base64 = os.environ.get('ORACLE_WALLET_BASE64')
+                if wallet_base64:
+                    # Base64 디코딩하여 임시 wallet 파일 생성
+                    wallet_dir = '/tmp/wallet'
+                    os.makedirs(wallet_dir, exist_ok=True)
+                    wallet_path = f'{wallet_dir}/wallet.zip'
+                    with open(wallet_path, 'wb') as f:
+                        f.write(base64.b64decode(wallet_base64))
+
+                    # Wallet 압축 해제
+                    import zipfile
+                    with zipfile.ZipFile(wallet_path, 'r') as zip_ref:
+                        zip_ref.extractall(wallet_dir)
+
+                    self.conn = oracledb.connect(
+                        user=os.environ.get('ORACLE_DB_USER', 'ADMIN'),
+                        password=os.environ.get('ORACLE_DB_PASSWORD'),
+                        dsn=os.environ.get('ORACLE_DB_DSN'),
+                        config_dir=wallet_dir,
+                        wallet_location=wallet_dir,
+                        wallet_password=os.environ.get('ORACLE_DB_PASSWORD')
+                    )
+                else:
+                    # Wallet 없이 연결 (로컬 테스트용)
+                    self.conn = oracledb.connect(
+                        user=os.environ.get('ORACLE_DB_USER', 'ADMIN'),
+                        password=os.environ.get('ORACLE_DB_PASSWORD'),
+                        dsn=os.environ.get('ORACLE_DB_DSN')
+                    )
                 print("✅ Oracle Database 연결 성공")
             except Exception as e:
                 print(f"⚠️ Oracle DB 연결 실패, SQLite 사용: {e}")
