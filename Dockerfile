@@ -5,12 +5,9 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 시스템 패키지 업데이트 및 필수 패키지 설치
-RUN apt-get update && apt-get install -y \
-    gcc \
-    wget \
-    unzip \
-    libaio1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y gcc wget unzip libaio1 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Oracle Instant Client 설치 (cx_Oracle 지원)
 RUN wget -q https://download.oracle.com/otn_software/linux/instantclient/2111000/instantclient-basic-linux.x64-21.11.0.0.0dbru.zip \
@@ -21,7 +18,7 @@ RUN wget -q https://download.oracle.com/otn_software/linux/instantclient/2111000
     && ldconfig
 
 # Oracle 환경변수 설정
-ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_21_11:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_21_11
 ENV TNS_ADMIN=/app/wallet
 
 # Python 패키지 복사 및 설치
