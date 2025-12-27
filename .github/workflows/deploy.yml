@@ -62,6 +62,7 @@ jobs:
               -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
               -e MARKET="${{ secrets.MARKET }}" \
               -e CHECK_INTERVAL="${{ secrets.CHECK_INTERVAL }}" \
+              -e ENABLE_MULTI_COIN="true" \
               ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
 
             # 정리

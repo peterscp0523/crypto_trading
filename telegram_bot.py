@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from upbit_api import UpbitAPI
 from trading_indicators import TechnicalIndicators
 from advanced_strategy import AdvancedIndicators
+from market_scanner import MarketScanner
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -42,12 +43,14 @@ class TelegramBot:
 class TradingBot:
     """자동매매 봇"""
     
-    def __init__(self, upbit, telegram, market="KRW-ETH", dry_run=False, signal_timeframe=15):
+    def __init__(self, upbit, telegram, market="KRW-ETH", dry_run=False, signal_timeframe=15,
+                 enable_multi_coin=False):
         self.upbit = upbit
         self.telegram = telegram
         self.market = market
         self.dry_run = dry_run  # 시뮬레이션 모드
         self.signal_timeframe = signal_timeframe  # 신호 타임프레임 (5, 15, 60분)
+        self.enable_multi_coin = enable_multi_coin  # 멀티 코인 모드
 
         # 전략 파라미터 (다층 익절 시스템)
         self.rsi_buy = 35            # 30 → 35 (더 많은 기회)
@@ -72,6 +75,11 @@ class TradingBot:
         self.bb_period = 20
         self.bb_std = 2
         self.volume_threshold = 1.2  # 1.3 → 1.2 (더욱 완화)
+
+        # 멀티 코인 설정
+        self.market_scanner = MarketScanner(upbit) if enable_multi_coin else None
+        self.coin_switch_score_diff = 20  # 코인 전환 최소 점수 차이
+        self.last_coin_scan = None
 
         # 상태
         self.position = None
@@ -405,19 +413,69 @@ class TradingBot:
             self.telegram.send_message(f"❌ 매도 실패: {e}")
             return False
     
+    def check_multi_coin_switch(self):
+        """멀티 코인 모드: 더 나은 코인으로 전환 검토"""
+        if not self.enable_multi_coin or not self.market_scanner:
+            return False
+
+        # 포지션 없을 때만 코인 변경 고려
+        if self.position:
+            return False
+
+        # 10분마다 스캔 (API 부하 줄이기)
+        now = datetime.now()
+        if self.last_coin_scan and (now - self.last_coin_scan).total_seconds() < 600:
+            return False
+
+        self.last_coin_scan = now
+
+        try:
+            # 현재 모멘텀 랭킹 확인
+            best_coin = self.market_scanner.get_best_coin()
+
+            if not best_coin:
+                return False
+
+            # 현재 코인과 다르고, 점수 차이가 크면 전환
+            if best_coin['market'] != self.market:
+                self.log(f"💱 코인 전환: {self.market} → {best_coin['market']} "
+                        f"(점수: {best_coin['score']})")
+
+                # 텔레그램 알림
+                msg = f"💱 <b>코인 전환</b>\n━━━━━━━━━━━━━━━━━\n\n"
+                msg += f"기존: {self.market.replace('KRW-', '')}\n"
+                msg += f"신규: {best_coin['name']}\n\n"
+                msg += f"📊 모멘텀 점수: {best_coin['score']}\n"
+                msg += f"📈 24H 변화: {best_coin['change_24h']:+.2f}%\n"
+                msg += f"💰 거래액: {best_coin['volume_24h']/100_000_000:,.0f}억원"
+                self.telegram.send_message(msg)
+
+                # 마켓 변경
+                self.market = best_coin['market']
+                return True
+
+            return False
+
+        except Exception as e:
+            self.log(f"코인 전환 검토 실패: {e}")
+            return False
+
     def check_and_trade(self):
         """메인 로직"""
         try:
+            # 멀티 코인 모드: 코인 전환 검토
+            self.check_multi_coin_switch()
+
             status = self.get_current_status()
             signals = self.get_signals(self.signal_timeframe)
-            
+
             if not signals:
                 self.log("신호 없음")
                 return
-            
-            self.log(f"\n[{datetime.now().strftime('%H:%M:%S')}] 체크")
+
+            self.log(f"\n[{datetime.now().strftime('%H:%M:%S')}] 체크 ({self.market.replace('KRW-', '')})")
             self.log(f"자산: {status['total']:,.0f}원 | RSI: {signals['rsi']:.1f}")
-            
+
             # 포지션 있음
             if self.position:
                 price = signals['price']
@@ -832,14 +890,23 @@ if __name__ == "__main__":
         # .env 파일에서 설정 로드
         config = get_config()
 
+        # 멀티 코인 모드 활성화 여부 (환경변수로 제어)
+        enable_multi_coin = os.environ.get('ENABLE_MULTI_COIN', 'true').lower() == 'true'
+
         print("✅ 설정 로드 완료")
         print(f"Market: {config['market']}")
-        print(f"Check Interval: {config['check_interval']}초\n")
+        print(f"Check Interval: {config['check_interval']}초")
+        print(f"멀티 코인 모드: {'ON' if enable_multi_coin else 'OFF'}\n")
 
         # 실행
         upbit = UpbitAPI(config['upbit_access_key'], config['upbit_secret_key'])
         telegram = TelegramBot(config['telegram_token'], config['telegram_chat_id'])
-        bot = TradingBot(upbit, telegram, config['market'])
+        bot = TradingBot(
+            upbit,
+            telegram,
+            config['market'],
+            enable_multi_coin=enable_multi_coin
+        )
         bot.run(config['check_interval'])
 
     except Exception as e:

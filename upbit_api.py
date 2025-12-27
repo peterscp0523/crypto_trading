@@ -74,14 +74,34 @@ class UpbitAPI:
     def order_market_sell(self, market, volume):
         """시장가 매도"""
         url = f"{self.server_url}/v1/orders"
-        
+
         query = {
             'market': market,
             'side': 'ask',
             'volume': str(volume),
             'ord_type': 'market'
         }
-        
+
         headers = self._get_headers(query)
         response = requests.post(url, json=query, headers=headers)
+        return response.json()
+
+    def get_market_all(self):
+        """마켓 코드 조회"""
+        url = f"{self.server_url}/v1/market/all"
+        params = {"isDetails": "false"}
+        response = requests.get(url, params=params)
+        return response.json()
+
+    def get_current_prices(self, markets):
+        """여러 마켓의 현재가 한번에 조회
+
+        Args:
+            markets: 마켓 리스트 ['KRW-BTC', 'KRW-ETH', ...]
+        """
+        url = f"{self.server_url}/v1/ticker"
+        # 한번에 최대 100개까지 조회 가능
+        markets_str = ','.join(markets[:100])
+        params = {"markets": markets_str}
+        response = requests.get(url, params=params)
         return response.json()
