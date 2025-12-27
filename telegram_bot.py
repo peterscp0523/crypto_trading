@@ -49,12 +49,26 @@ class TradingBot:
         self.dry_run = dry_run  # 시뮬레이션 모드
         self.signal_timeframe = signal_timeframe  # 신호 타임프레임 (5, 15, 60분)
 
-        # 전략 파라미터 (손익 비율 개선)
+        # 전략 파라미터 (다층 익절 시스템)
         self.rsi_buy = 35            # 30 → 35 (더 많은 기회)
         self.rsi_sell = 70           # 70 유지
-        self.take_profit = 0.03      # 5% → 3% (더 빠른 익절)
-        self.stop_loss = -0.02       # -3% → -2% (더 빠른 손절)
-        self.trailing_stop = 0.015   # 트레일링 스톱: 최고점 대비 -1.5%
+
+        # 다층 익절 전략 (빠른 수익 실현)
+        self.quick_profit = 0.008    # 0.8% 퀵 익절 (30분 이내)
+        self.take_profit_1 = 0.015   # 1.5% 1차 익절
+        self.take_profit_2 = 0.025   # 2.5% 2차 익절
+        self.take_profit_3 = 0.04    # 4.0% 최종 익절
+
+        self.stop_loss = -0.015      # -2% → -1.5% (더 빠른 손절)
+
+        # 동적 트레일링 스톱
+        self.trailing_stop_tight = 0.003   # 0.3% 수익 이후 -0.3% 트레일링
+        self.trailing_stop_medium = 0.005  # 0.8% 수익 이후 -0.5% 트레일링
+        self.trailing_stop_wide = 0.008    # 1.5% 수익 이후 -0.8% 트레일링
+
+        # 포지션 타임아웃
+        self.position_timeout_hours = 3    # 3시간 이후 강제 청산 검토
+
         self.bb_period = 20
         self.bb_std = 2
         self.volume_threshold = 1.2  # 1.3 → 1.2 (더욱 완화)
@@ -302,10 +316,15 @@ class TradingBot:
             msg += f"  • RSI: {signals['rsi']:.1f}\n"
             msg += f"  • 볼린저: {signals['bb_pos']:.1f}%\n"
             msg += f"  • 거래량: {signals['vol_ratio']:.2f}x\n\n"
-            msg += f"🎯 목표:\n"
-            msg += f"  • 익절: {price * (1 + self.take_profit):,.0f}원 (+{self.take_profit*100:.0f}%)\n"
-            msg += f"  • 손절: {price * (1 + self.stop_loss):,.0f}원 ({self.stop_loss*100:.0f}%)\n"
-            msg += f"  • 트레일링: 최고점 대비 -{self.trailing_stop*100:.1f}%\n"
+            msg += f"🎯 익절 목표 (다층):\n"
+            msg += f"  • ⚡ 퀵: {price * (1 + self.quick_profit):,.0f}원 (+{self.quick_profit*100:.1f}%, 30분내)\n"
+            msg += f"  • 1차: {price * (1 + self.take_profit_1):,.0f}원 (+{self.take_profit_1*100:.1f}%)\n"
+            msg += f"  • 2차: {price * (1 + self.take_profit_2):,.0f}원 (+{self.take_profit_2*100:.1f}%)\n"
+            msg += f"  • 최종: {price * (1 + self.take_profit_3):,.0f}원 (+{self.take_profit_3*100:.0f}%)\n\n"
+            msg += f"🛡️ 리스크 관리:\n"
+            msg += f"  • 손절: {price * (1 + self.stop_loss):,.0f}원 ({self.stop_loss*100:.1f}%)\n"
+            msg += f"  • 트레일링: 0.3%↑시 -0.3%, 0.8%↑시 -0.5%, 1.5%↑시 -0.8%\n"
+            msg += f"  • 타임아웃: {self.position_timeout_hours}시간\n"
             msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
             
             self.telegram.send_message(msg)
@@ -404,27 +423,65 @@ class TradingBot:
                 price = signals['price']
                 buy_price = self.position['buy_price']
                 profit_rate = (price - buy_price) / buy_price
-                
+
                 # 최고/최저 업데이트
                 if profit_rate > self.position_peak_profit:
                     self.position_peak_profit = profit_rate
                 if profit_rate < self.position_lowest_profit:
                     self.position_lowest_profit = profit_rate
-                
-                self.log(f"포지션: {profit_rate*100:+.2f}% (최고: {self.position_peak_profit*100:+.2f}%)")
 
-                # 익절
-                if profit_rate >= self.take_profit:
-                    self.sell(status, signals, f"익절 ({profit_rate*100:.2f}%)")
-                # 손절
+                # 포지션 보유 시간
+                hold_hours = (datetime.now() - self.position['buy_time']).total_seconds() / 3600
+                hold_minutes = hold_hours * 60
+
+                self.log(f"포지션: {profit_rate*100:+.2f}% (최고: {self.position_peak_profit*100:+.2f}%) | 보유: {hold_hours:.1f}h")
+
+                # === 다층 익절 시스템 ===
+                # 1. 퀵 익절 (30분 이내 0.8% 이상)
+                if hold_minutes <= 30 and profit_rate >= self.quick_profit:
+                    self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%)")
+
+                # 2. 최종 익절 (4%)
+                elif profit_rate >= self.take_profit_3:
+                    self.sell(status, signals, f"🎯 최종익절 ({profit_rate*100:.2f}%)")
+
+                # 3. 2차 익절 (2.5%)
+                elif profit_rate >= self.take_profit_2:
+                    self.sell(status, signals, f"✅ 2차익절 ({profit_rate*100:.2f}%)")
+
+                # 4. 1차 익절 (1.5%)
+                elif profit_rate >= self.take_profit_1:
+                    self.sell(status, signals, f"✅ 1차익절 ({profit_rate*100:.2f}%)")
+
+                # === 손절 ===
                 elif profit_rate <= self.stop_loss:
-                    self.sell(status, signals, f"손절 ({profit_rate*100:.2f}%)")
-                # 트레일링 스톱 (최고점 대비 -1.5% 하락)
-                elif self.position_peak_profit > 0.01 and profit_rate < self.position_peak_profit - self.trailing_stop:
-                    self.sell(status, signals, f"트레일링스톱 (최고 {self.position_peak_profit*100:.2f}%)")
-                # RSI 신호
-                elif signals['sell']:
-                    self.sell(status, signals, "RSI+볼린저")
+                    self.sell(status, signals, f"❌ 손절 ({profit_rate*100:.2f}%)")
+
+                # === 동적 트레일링 스톱 ===
+                # 1.5% 이상 수익 시: -0.8% 트레일링
+                elif self.position_peak_profit >= 0.015 and profit_rate < self.position_peak_profit - self.trailing_stop_wide:
+                    self.sell(status, signals, f"📉 트레일링스톱-와이드 (최고 {self.position_peak_profit*100:.2f}%)")
+
+                # 0.8% 이상 수익 시: -0.5% 트레일링
+                elif self.position_peak_profit >= 0.008 and profit_rate < self.position_peak_profit - self.trailing_stop_medium:
+                    self.sell(status, signals, f"📉 트레일링스톱-미디엄 (최고 {self.position_peak_profit*100:.2f}%)")
+
+                # 0.3% 이상 수익 시: -0.3% 트레일링 (핵심 개선!)
+                elif self.position_peak_profit >= 0.003 and profit_rate < self.position_peak_profit - self.trailing_stop_tight:
+                    self.sell(status, signals, f"📉 트레일링스톱-타이트 (최고 {self.position_peak_profit*100:.2f}%)")
+
+                # === 포지션 타임아웃 ===
+                # 3시간 이상 보유 + 손실 중이면 청산
+                elif hold_hours >= self.position_timeout_hours and profit_rate < 0:
+                    self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
+
+                # 3시간 이상 보유 + 수익 미미하면 청산
+                elif hold_hours >= self.position_timeout_hours and profit_rate < 0.005:
+                    self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
+
+                # === RSI 과열 신호 ===
+                elif signals['sell'] and profit_rate > 0:
+                    self.sell(status, signals, f"📊 RSI과열 ({profit_rate*100:.2f}%)")
             
             # 포지션 없음
             else:
@@ -652,16 +709,20 @@ class TradingBot:
         msg += f"/trend - 추세 분석\n"
         msg += f"/report - 일일 리포트\n"
         msg += f"/help - 도움말\n\n"
-        msg += f"⚙️ 전략 설정:\n"
-        msg += f"  • 익절: +{self.take_profit*100}%\n"
-        msg += f"  • 손절: {self.stop_loss*100}%\n"
-        msg += f"  • 다중 시간대: 1H + 4H\n"
-        msg += f"  • 체크: 5분마다\n\n"
-        msg += f"📊 추세별 매수:\n"
-        msg += f"  • 🚀 강한상승: RSI < 40\n"
-        msg += f"  • 📊 조정: RSI < 35\n"
-        msg += f"  • ⚡ 약한반등: RSI < 30\n"
-        msg += f"  • 🔻 강한하락: 매수금지"
+        msg += f"⚙️ 다층 익절 전략:\n"
+        msg += f"  • ⚡ 퀵익절: +{self.quick_profit*100:.1f}% (30분내)\n"
+        msg += f"  • 1차: +{self.take_profit_1*100:.1f}%\n"
+        msg += f"  • 2차: +{self.take_profit_2*100:.1f}%\n"
+        msg += f"  • 최종: +{self.take_profit_3*100:.0f}%\n\n"
+        msg += f"🛡️ 리스크 관리:\n"
+        msg += f"  • 손절: {self.stop_loss*100:.1f}%\n"
+        msg += f"  • 동적 트레일링: 0.3/0.5/0.8%\n"
+        msg += f"  • 타임아웃: {self.position_timeout_hours}h\n\n"
+        msg += f"📊 추세별 매수 (1H+4H):\n"
+        msg += f"  • 🚀 강한상승: RSI < 50\n"
+        msg += f"  • 📊 조정: RSI < 45\n"
+        msg += f"  • ⚡ 약한반등: RSI < 40\n"
+        msg += f"  • 🔻 강한하락: RSI < 30"
 
         self.telegram.send_message(msg)
     
@@ -726,10 +787,11 @@ class TradingBot:
                 msg = f"💰 <b>봇 시작</b> {mode_tag}\n━━━━━━━━━━━━━━━━━\n\n"
                 msg += f"💵 원화: {status['krw']:,.0f}원\n"
                 msg += f"✅ 매수 신호 대기\n\n"
-                msg += f"⚙️ 전략:\n"
+                msg += f"⚙️ 다층 익절 전략:\n"
                 msg += f"  • 다중 시간대 분석 (1H + 4H)\n"
-                msg += f"  • 익절 {self.take_profit*100}% / 손절 {abs(self.stop_loss)*100}%\n"
-                msg += f"  • 거래량 기준 {self.volume_threshold}배"
+                msg += f"  • 익절: ⚡{self.quick_profit*100:.1f}% / {self.take_profit_1*100:.1f}% / {self.take_profit_2*100:.1f}% / {self.take_profit_3*100:.0f}%\n"
+                msg += f"  • 손절: {abs(self.stop_loss)*100:.1f}%\n"
+                msg += f"  • 동적 트레일링 & 타임아웃 {self.position_timeout_hours}h"
 
                 self.telegram.send_message(msg)
                 self.log("✅ 신호 대기")
