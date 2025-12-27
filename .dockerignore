@@ -1,0 +1,41 @@
+# 환경 변수 (보안)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 가상환경
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# 테스트 및 백업
+*.log
+*.bak
+*.backup
+
+# macOS
+.DS_Store
+
+# 문서
+README.md
+*.md
+
+# 테스트 파일
+test_*.py
+backtest.py
+run_dry_run.py

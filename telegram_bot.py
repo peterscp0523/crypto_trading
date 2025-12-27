@@ -1,0 +1,785 @@
+import os
+import time
+import requests
+from datetime import datetime, timedelta
+from upbit_api import UpbitAPI
+from trading_indicators import TechnicalIndicators
+from advanced_strategy import AdvancedIndicators
+from concurrent.futures import ThreadPoolExecutor
+
+
+
+class TelegramBot:
+    """텔레그램 봇"""
+    
+    def __init__(self, token, chat_id):
+        self.token = token
+        self.chat_id = chat_id
+        self.base_url = f"https://api.telegram.org/bot{token}"
+    
+    def send_message(self, text):
+        """메시지 전송"""
+        try:
+            url = f"{self.base_url}/sendMessage"
+            data = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
+            response = requests.post(url, data=data, timeout=10)
+            return response.json()
+        except Exception as e:
+            print(f"텔레그램 전송 실패: {e}")
+            return None
+    
+    def get_updates(self, offset=None):
+        """메시지 가져오기"""
+        try:
+            url = f"{self.base_url}/getUpdates"
+            params = {"timeout": 1, "offset": offset}
+            response = requests.get(url, params=params, timeout=5)
+            return response.json()
+        except Exception as e:
+            return None
+
+
+class TradingBot:
+    """자동매매 봇"""
+    
+    def __init__(self, upbit, telegram, market="KRW-ETH", dry_run=False, signal_timeframe=15):
+        self.upbit = upbit
+        self.telegram = telegram
+        self.market = market
+        self.dry_run = dry_run  # 시뮬레이션 모드
+        self.signal_timeframe = signal_timeframe  # 신호 타임프레임 (5, 15, 60분)
+
+        # 전략 파라미터 (손익 비율 개선)
+        self.rsi_buy = 35            # 30 → 35 (더 많은 기회)
+        self.rsi_sell = 70           # 70 유지
+        self.take_profit = 0.03      # 5% → 3% (더 빠른 익절)
+        self.stop_loss = -0.02       # -3% → -2% (더 빠른 손절)
+        self.trailing_stop = 0.015   # 트레일링 스톱: 최고점 대비 -1.5%
+        self.bb_period = 20
+        self.bb_std = 2
+        self.volume_threshold = 1.2  # 1.3 → 1.2 (더욱 완화)
+
+        # 상태
+        self.position = None
+        self.trade_history = []
+        self.is_running = True
+        self.error_count = 0
+        self.last_daily_report = None
+        self.position_peak_profit = 0
+        self.position_lowest_profit = 0
+        self.last_update_id = None
+        self.executor = ThreadPoolExecutor(max_workers=3)
+
+        # 드라이런 모드용 가상 잔고
+        if self.dry_run:
+            self.virtual_krw = 1000000  # 100만원
+            self.virtual_coin = 0
+            self.virtual_avg_price = 0
+    
+    def get_current_status(self):
+        """현재 계좌 및 시장 상태"""
+        # 드라이런 모드
+        if self.dry_run:
+            ticker = self.upbit.get_current_price(self.market)
+            current_price = ticker['trade_price']
+            change_24h = ticker.get('signed_change_rate', 0) * 100
+
+            return {
+                'krw': self.virtual_krw,
+                'coin': self.virtual_coin,
+                'avg_price': self.virtual_avg_price,
+                'current_price': current_price,
+                'coin_value': self.virtual_coin * current_price,
+                'total': self.virtual_krw + (self.virtual_coin * current_price),
+                'change_24h': change_24h
+            }
+
+        # 실제 모드
+        accounts = self.upbit.get_accounts()
+
+        krw = 0
+        coin = 0
+        avg_price = 0
+
+        for acc in accounts:
+            if acc['currency'] == 'KRW':
+                krw = float(acc['balance'])
+            elif acc['currency'] == self.market.split('-')[1]:
+                coin = float(acc['balance'])
+                avg_price = float(acc['avg_buy_price'])
+
+        ticker = self.upbit.get_current_price(self.market)
+        current_price = ticker['trade_price']
+        change_24h = ticker.get('signed_change_rate', 0) * 100
+
+        return {
+            'krw': krw,
+            'coin': coin,
+            'avg_price': avg_price,
+            'current_price': current_price,
+            'coin_value': coin * current_price,
+            'total': krw + (coin * current_price),
+            'change_24h': change_24h
+        }
+
+    def get_trend_analysis(self):
+        """다중 시간대 추세 분석 (1H + 4H)"""
+        try:
+            # 1시간봉 200개 (약 8일치)
+            candles_1h = self.upbit.get_candles(self.market, "minutes", 60, 200)
+            # 4시간봉 200개 (약 33일치)
+            candles_4h = self.upbit.get_candles(self.market, "minutes", 240, 200)
+
+            if len(candles_1h) < 50 or len(candles_4h) < 50:
+                return None
+
+            # 1시간 추세
+            prices_1h = [c['trade_price'] for c in candles_1h]
+            rsi_1h = TechnicalIndicators.calculate_rsi(prices_1h, 14)
+            ma20_1h = sum(prices_1h[:20]) / 20
+            ma50_1h = sum(prices_1h[:50]) / 50
+            trend_1h = "up" if ma20_1h > ma50_1h and prices_1h[0] > ma20_1h else "down"
+
+            # 4시간 추세
+            prices_4h = [c['trade_price'] for c in candles_4h]
+            rsi_4h = TechnicalIndicators.calculate_rsi(prices_4h, 14)
+            ma20_4h = sum(prices_4h[:20]) / 20
+            ma50_4h = sum(prices_4h[:50]) / 50
+            trend_4h = "up" if ma20_4h > ma50_4h and prices_4h[0] > ma20_4h else "down"
+
+            # 추세 상태 판단 (RSI 기준 완화)
+            if trend_1h == "up" and trend_4h == "up":
+                trend_state = "strong_bull"  # 강한 상승
+                buy_allowed = True
+                rsi_threshold = 50  # 40 → 50
+            elif trend_1h == "down" and trend_4h == "up":
+                trend_state = "correction"   # 조정 (상승장 내 조정)
+                buy_allowed = True
+                rsi_threshold = 45  # 35 → 45
+            elif trend_1h == "up" and trend_4h == "down":
+                trend_state = "weak_bounce"  # 약한 반등
+                buy_allowed = True
+                rsi_threshold = 40  # 30 → 40
+            else:  # trend_1h == "down" and trend_4h == "down"
+                trend_state = "strong_bear"  # 강한 하락
+                buy_allowed = True  # False → True (하락장에서도 매수)
+                rsi_threshold = 30  # 25 → 30
+
+            return {
+                'trend_1h': trend_1h,
+                'trend_4h': trend_4h,
+                'rsi_1h': rsi_1h,
+                'rsi_4h': rsi_4h,
+                'trend_state': trend_state,
+                'buy_allowed': buy_allowed,
+                'rsi_threshold': rsi_threshold,
+                'ma20_1h': ma20_1h,
+                'ma50_1h': ma50_1h,
+                'ma20_4h': ma20_4h,
+                'ma50_4h': ma50_4h
+            }
+
+        except Exception as e:
+            self.log(f"추세 분석 실패: {e}")
+            return None
+    
+    def get_signals(self, timeframe=15):
+        """시장 분석 및 신호 (다중 시간대 포함)
+
+        Args:
+            timeframe: 5, 15, 60 등 (분 단위)
+        """
+        candles = self.upbit.get_candles(self.market, "minutes", timeframe, 50)
+        if len(candles) < 50:
+            return None
+
+        prices = [c['trade_price'] for c in candles]
+        volumes = [c['candle_acc_trade_volume'] for c in candles]
+
+        rsi = TechnicalIndicators.calculate_rsi(prices, 14)
+        upper, middle, lower = AdvancedIndicators.calculate_bollinger_bands(prices, 20, 2)
+        vol_ma = AdvancedIndicators.calculate_volume_ma(volumes, 20)
+
+        if not all([rsi, upper, lower, vol_ma]):
+            return None
+
+        current_price = prices[0]
+        current_vol = volumes[0]
+        bb_pos = ((current_price - lower) / (upper - lower)) * 100
+
+        # 다중 시간대 추세 분석
+        trend = self.get_trend_analysis()
+
+        # 매수 조건 (완화됨 - 거래량 조건 제거/완화)
+        buy_signal = False
+        if trend and trend['buy_allowed']:
+            rsi_threshold = trend['rsi_threshold']
+
+            # 추세별 조건
+            if trend['trend_state'] == 'strong_bull':
+                # 강한 상승: RSI만 체크
+                buy_signal = (rsi < rsi_threshold)
+            elif trend['trend_state'] == 'correction':
+                # 조정: RSI + 볼린저 완화
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.05)
+            elif trend['trend_state'] == 'weak_bounce':
+                # 약한 반등: RSI + 볼린저
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.03)
+            elif trend['trend_state'] == 'strong_bear':
+                # 강한 하락: 과매도 + 볼린저 하단
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.02)
+        else:
+            # 추세 분석 실패: 극도의 과매도만
+            buy_signal = (rsi < 25 and current_price <= lower * 1.01)
+
+        return {
+            'price': current_price,
+            'rsi': rsi,
+            'upper': upper,
+            'lower': lower,
+            'bb_pos': bb_pos,
+            'vol_ratio': current_vol / vol_ma,
+            'trend': trend,
+            'buy': buy_signal,
+            'sell': rsi > self.rsi_sell and current_price >= upper * 0.99
+        }
+    
+    def buy(self, status, signals):
+        """매수 실행"""
+        krw = status['krw']
+        if krw < 5000:
+            return False
+
+        try:
+            price = signals['price']
+
+            # 드라이런 모드: 가상 거래
+            if self.dry_run:
+                amount = krw / price
+                self.virtual_coin = amount
+                self.virtual_krw = 0
+                self.virtual_avg_price = price
+            # 실제 주문
+            else:
+                result = self.upbit.order_market_buy(self.market, krw)
+
+            amount = krw / price
+            
+            self.position = {
+                'buy_price': price,
+                'buy_time': datetime.now(),
+                'amount': amount,
+                'buy_krw': krw
+            }
+            
+            self.position_peak_profit = 0
+            self.position_lowest_profit = 0
+            
+            self.trade_history.append({
+                'type': 'BUY',
+                'time': datetime.now(),
+                'price': price,
+                'amount': krw
+            })
+            
+            trend_emoji = {"strong_bull": "🚀", "correction": "📊", "weak_bounce": "⚡", "strong_bear": "🔻"}
+            trend_name = {"strong_bull": "강한상승", "correction": "조정", "weak_bounce": "약한반등", "strong_bear": "강한하락"}
+
+            mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
+            msg = f"{mode_prefix}🔵 <b>매수 완료</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"💰 금액: {krw:,.0f}원\n"
+            msg += f"📊 가격: {price:,.0f}원\n"
+            msg += f"🪙 수량: {amount:.6f} ETH\n\n"
+
+            if signals.get('trend'):
+                trend = signals['trend']
+                state = trend['trend_state']
+                msg += f"📈 추세: {trend_emoji.get(state, '📊')} {trend_name.get(state, state)}\n"
+                msg += f"  • 1H: {'↑' if trend['trend_1h'] == 'up' else '↓'} RSI {trend['rsi_1h']:.1f}\n"
+                msg += f"  • 4H: {'↑' if trend['trend_4h'] == 'up' else '↓'} RSI {trend['rsi_4h']:.1f}\n\n"
+
+            msg += f"📊 지표:\n"
+            msg += f"  • RSI: {signals['rsi']:.1f}\n"
+            msg += f"  • 볼린저: {signals['bb_pos']:.1f}%\n"
+            msg += f"  • 거래량: {signals['vol_ratio']:.2f}x\n\n"
+            msg += f"🎯 목표:\n"
+            msg += f"  • 익절: {price * (1 + self.take_profit):,.0f}원 (+{self.take_profit*100:.0f}%)\n"
+            msg += f"  • 손절: {price * (1 + self.stop_loss):,.0f}원 ({self.stop_loss*100:.0f}%)\n"
+            msg += f"  • 트레일링: 최고점 대비 -{self.trailing_stop*100:.1f}%\n"
+            msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            
+            self.telegram.send_message(msg)
+            self.log("✅ 매수 완료")
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ 매수 실패: {e}")
+            self.telegram.send_message(f"❌ 매수 실패: {e}")
+            return False
+    
+    def sell(self, status, signals, reason):
+        """매도 실행"""
+        if not self.position:
+            return False
+        
+        coin = status['coin']
+        if coin < 0.001:
+            self.position = None
+            return False
+        
+        try:
+            price = signals['price']
+            buy_price = self.position['buy_price']
+            profit_rate = (price - buy_price) / buy_price * 100
+            
+            hold_hours = (datetime.now() - self.position['buy_time']).total_seconds() / 3600
+
+            # 드라이런 모드: 가상 거래
+            if self.dry_run:
+                sell_krw = coin * price
+                profit = sell_krw - self.position['buy_krw']
+                self.virtual_krw = sell_krw
+                self.virtual_coin = 0
+                self.virtual_avg_price = 0
+            # 실제 주문
+            else:
+                self.upbit.order_market_sell(self.market, coin)
+
+            sell_krw = coin * price
+            profit = sell_krw - self.position['buy_krw']
+            
+            self.trade_history.append({
+                'type': 'SELL',
+                'time': datetime.now(),
+                'price': price,
+                'amount': sell_krw,
+                'profit': profit,
+                'profit_rate': profit_rate,
+                'reason': reason
+            })
+            
+            emoji = "🟢" if profit > 0 else "🔴"
+            mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
+            msg = f"{mode_prefix}{emoji} <b>매도 완료</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"💰 금액: {sell_krw:,.0f}원\n"
+            msg += f"📊 가격: {price:,.0f}원\n"
+            msg += f"📈 매수가: {buy_price:,.0f}원\n\n"
+            msg += f"💵 <b>수익: {profit:+,.0f}원 ({profit_rate:+.2f}%)</b>\n\n"
+            msg += f"📊 통계:\n"
+            msg += f"  • 보유: {hold_hours:.1f}시간\n"
+            msg += f"  • 최고: {self.position_peak_profit*100:+.2f}%\n"
+            msg += f"  • 최저: {self.position_lowest_profit*100:+.2f}%\n\n"
+            msg += f"📝 사유: {reason}\n"
+            msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            
+            self.telegram.send_message(msg)
+            self.log("✅ 매도 완료")
+            
+            self.position = None
+            self.position_peak_profit = 0
+            self.position_lowest_profit = 0
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"❌ 매도 실패: {e}")
+            self.telegram.send_message(f"❌ 매도 실패: {e}")
+            return False
+    
+    def check_and_trade(self):
+        """메인 로직"""
+        try:
+            status = self.get_current_status()
+            signals = self.get_signals(self.signal_timeframe)
+            
+            if not signals:
+                self.log("신호 없음")
+                return
+            
+            self.log(f"\n[{datetime.now().strftime('%H:%M:%S')}] 체크")
+            self.log(f"자산: {status['total']:,.0f}원 | RSI: {signals['rsi']:.1f}")
+            
+            # 포지션 있음
+            if self.position:
+                price = signals['price']
+                buy_price = self.position['buy_price']
+                profit_rate = (price - buy_price) / buy_price
+                
+                # 최고/최저 업데이트
+                if profit_rate > self.position_peak_profit:
+                    self.position_peak_profit = profit_rate
+                if profit_rate < self.position_lowest_profit:
+                    self.position_lowest_profit = profit_rate
+                
+                self.log(f"포지션: {profit_rate*100:+.2f}% (최고: {self.position_peak_profit*100:+.2f}%)")
+
+                # 익절
+                if profit_rate >= self.take_profit:
+                    self.sell(status, signals, f"익절 ({profit_rate*100:.2f}%)")
+                # 손절
+                elif profit_rate <= self.stop_loss:
+                    self.sell(status, signals, f"손절 ({profit_rate*100:.2f}%)")
+                # 트레일링 스톱 (최고점 대비 -1.5% 하락)
+                elif self.position_peak_profit > 0.01 and profit_rate < self.position_peak_profit - self.trailing_stop:
+                    self.sell(status, signals, f"트레일링스톱 (최고 {self.position_peak_profit*100:.2f}%)")
+                # RSI 신호
+                elif signals['sell']:
+                    self.sell(status, signals, "RSI+볼린저")
+            
+            # 포지션 없음
+            else:
+                if signals['buy']:
+                    self.buy(status, signals)
+            
+            self.error_count = 0
+            
+        except Exception as e:
+            self.error_count += 1
+            self.log(f"오류: {e}")
+            if self.error_count >= 3:
+                self.telegram.send_message(f"⚠️ 연속 오류 {self.error_count}회\n{e}")
+    
+    def daily_report(self):
+        """일일 리포트"""
+        try:
+            status = self.get_current_status()
+            
+            today = datetime.now().date()
+            today_trades = [t for t in self.trade_history if t['time'].date() == today]
+            
+            buys = sum(1 for t in today_trades if t['type'] == 'BUY')
+            sells = sum(1 for t in today_trades if t['type'] == 'SELL')
+            today_profit = sum(t.get('profit', 0) for t in today_trades if t['type'] == 'SELL')
+            
+            all_sells = [t for t in self.trade_history if t['type'] == 'SELL']
+            total_profit = sum(t.get('profit', 0) for t in all_sells)
+            wins = sum(1 for t in all_sells if t.get('profit', 0) > 0)
+            win_rate = (wins / len(all_sells) * 100) if all_sells else 0
+            
+            msg = f"📊 <b>일일 리포트</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"💰 자산:\n"
+            msg += f"  • 총: {status['total']:,.0f}원\n"
+            msg += f"  • 원화: {status['krw']:,.0f}원\n"
+            msg += f"  • 코인: {status['coin_value']:,.0f}원\n\n"
+            msg += f"📈 오늘:\n"
+            msg += f"  • 거래: {len(today_trades)}회\n"
+            msg += f"  • 손익: {today_profit:+,.0f}원\n\n"
+            
+            if self.position:
+                profit_rate = (status['current_price'] - self.position['buy_price']) / self.position['buy_price'] * 100
+                msg += f"💼 포지션:\n"
+                msg += f"  • 수익률: {profit_rate:+.2f}%\n\n"
+            
+            msg += f"📊 전체:\n"
+            msg += f"  • 총거래: {len(all_sells)}회\n"
+            msg += f"  • 누적: {total_profit:+,.0f}원\n"
+            msg += f"  • 승률: {win_rate:.1f}%\n"
+            msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            self.telegram.send_message(msg)
+            self.log("📊 일일 리포트")
+            
+        except Exception as e:
+            self.log(f"리포트 실패: {e}")
+    
+    def check_daily_report(self):
+        """오후 9시 리포트"""
+        now = datetime.now()
+        if now.hour == 21 and now.minute < 5:
+            if not self.last_daily_report or self.last_daily_report.date() < now.date():
+                self.daily_report()
+                self.last_daily_report = now
+    
+    def handle_command(self, command):
+        """명령어 처리 (비동기)"""
+        try:
+            cmd = command.lower()
+            # 즉시 응답 전송 (사용자 경험 개선)
+            self.telegram.send_message("⏳ 처리 중...")
+
+            if cmd == '/status':
+                self.send_status()
+            elif cmd == '/report':
+                self.daily_report()
+            elif cmd == '/position':
+                self.send_position_info()
+            elif cmd == '/market':
+                self.send_market_info()
+            elif cmd == '/trend':
+                self.send_trend_info()
+            elif cmd == '/help':
+                self.send_help()
+            else:
+                self.telegram.send_message(f"❌ 알 수 없는 명령어\n/help 입력")
+        except Exception as e:
+            self.telegram.send_message(f"명령어 처리 실패: {e}")
+    
+    def send_status(self):
+        """현재 상태"""
+        try:
+            status = self.get_current_status()
+            signals = self.get_signals(self.signal_timeframe)
+
+            msg = f"📊 <b>현재 상태</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"💰 총자산: {status['total']:,.0f}원\n"
+            msg += f"💵 원화: {status['krw']:,.0f}원\n"
+            msg += f"🪙 코인: {status['coin']:.6f} ETH\n\n"
+            
+            if self.position:
+                profit_rate = (status['current_price'] - self.position['buy_price']) / self.position['buy_price'] * 100
+                msg += f"💼 포지션: {profit_rate:+.2f}%\n\n"
+            else:
+                msg += f"💼 포지션 없음\n\n"
+            
+            if signals:
+                msg += f"📈 시장:\n"
+                msg += f"  • RSI: {signals['rsi']:.1f}\n"
+                msg += f"  • 볼린저: {signals['bb_pos']:.1f}%\n\n"
+            
+            msg += f"🤖 봇: 정상 작동\n"
+            msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            
+            self.telegram.send_message(msg)
+            
+        except Exception as e:
+            self.telegram.send_message(f"조회 실패: {e}")
+    
+    def send_position_info(self):
+        """포지션 정보"""
+        try:
+            if not self.position:
+                self.telegram.send_message("💼 포지션 없음")
+                return
+            
+            status = self.get_current_status()
+            profit_rate = (status['current_price'] - self.position['buy_price']) / self.position['buy_price'] * 100
+            
+            msg = f"💼 <b>포지션</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"📊 매수가: {self.position['buy_price']:,.0f}원\n"
+            msg += f"📊 현재가: {status['current_price']:,.0f}원\n"
+            msg += f"💵 수익률: {profit_rate:+.2f}%\n\n"
+            msg += f"🎯 익절: {self.position['buy_price']*1.05:,.0f}원\n"
+            msg += f"🎯 손절: {self.position['buy_price']*0.97:,.0f}원"
+            
+            self.telegram.send_message(msg)
+            
+        except Exception as e:
+            self.telegram.send_message(f"조회 실패: {e}")
+    
+    def send_market_info(self):
+        """시장 정보"""
+        try:
+            status = self.get_current_status()
+            signals = self.get_signals(self.signal_timeframe)
+
+            if not signals:
+                self.telegram.send_message("시장 정보 없음")
+                return
+
+            msg = f"📈 <b>시장</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"📊 현재가: {status['current_price']:,.0f}원\n"
+            msg += f"📊 24시간: {status['change_24h']:+.2f}%\n\n"
+
+            if signals.get('trend'):
+                trend = signals['trend']
+                trend_emoji = {"strong_bull": "🚀", "correction": "📊", "weak_bounce": "⚡", "strong_bear": "🔻"}
+                trend_name = {"strong_bull": "강한상승", "correction": "조정", "weak_bounce": "약한반등", "strong_bear": "강한하락"}
+                state = trend['trend_state']
+                msg += f"🌐 추세: {trend_emoji.get(state, '📊')} {trend_name.get(state, state)}\n"
+                msg += f"  • 1H: {'↑' if trend['trend_1h'] == 'up' else '↓'}\n"
+                msg += f"  • 4H: {'↑' if trend['trend_4h'] == 'up' else '↓'}\n\n"
+
+            msg += f"📊 {self.signal_timeframe}분봉:\n"
+            msg += f"  • RSI: {signals['rsi']:.1f}\n"
+            msg += f"  • 볼린저: {signals['bb_pos']:.1f}%\n"
+            msg += f"  • 거래량: {signals['vol_ratio']:.2f}x\n\n"
+
+            if signals['buy']:
+                msg += f"🟢 매수 신호!"
+            elif signals['sell']:
+                msg += f"🔴 매도 신호!"
+            else:
+                msg += f"⚪ 대기"
+
+            self.telegram.send_message(msg)
+
+        except Exception as e:
+            self.telegram.send_message(f"조회 실패: {e}")
+
+    def send_trend_info(self):
+        """추세 상세 정보"""
+        try:
+            trend = self.get_trend_analysis()
+
+            if not trend:
+                self.telegram.send_message("추세 정보 없음")
+                return
+
+            trend_emoji = {"strong_bull": "🚀", "correction": "📊", "weak_bounce": "⚡", "strong_bear": "🔻"}
+            trend_name = {"strong_bull": "강한상승", "correction": "조정", "weak_bounce": "약한반등", "strong_bear": "강한하락"}
+            state = trend['trend_state']
+
+            msg = f"🌐 <b>추세 분석</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"📊 현재: {trend_emoji.get(state, '📊')} <b>{trend_name.get(state, state)}</b>\n\n"
+
+            msg += f"⏱️ 1시간봉:\n"
+            msg += f"  • 추세: {'↑ 상승' if trend['trend_1h'] == 'up' else '↓ 하락'}\n"
+            msg += f"  • RSI: {trend['rsi_1h']:.1f}\n"
+            msg += f"  • MA20: {trend['ma20_1h']:,.0f}원\n"
+            msg += f"  • MA50: {trend['ma50_1h']:,.0f}원\n\n"
+
+            msg += f"⏱️ 4시간봉:\n"
+            msg += f"  • 추세: {'↑ 상승' if trend['trend_4h'] == 'up' else '↓ 하락'}\n"
+            msg += f"  • RSI: {trend['rsi_4h']:.1f}\n"
+            msg += f"  • MA20: {trend['ma20_4h']:,.0f}원\n"
+            msg += f"  • MA50: {trend['ma50_4h']:,.0f}원\n\n"
+
+            msg += f"🎯 전략:\n"
+            msg += f"  • 매수: {'✅ 가능' if trend['buy_allowed'] else '❌ 금지'}\n"
+            msg += f"  • RSI 기준: < {trend['rsi_threshold']}\n"
+
+            self.telegram.send_message(msg)
+
+        except Exception as e:
+            self.telegram.send_message(f"조회 실패: {e}")
+    
+    def send_help(self):
+        """도움말"""
+        msg = f"🤖 <b>명령어</b>\n━━━━━━━━━━━━━━━━━\n\n"
+        msg += f"/status - 현재 상태\n"
+        msg += f"/position - 포지션\n"
+        msg += f"/market - 시장 현황\n"
+        msg += f"/trend - 추세 분석\n"
+        msg += f"/report - 일일 리포트\n"
+        msg += f"/help - 도움말\n\n"
+        msg += f"⚙️ 전략 설정:\n"
+        msg += f"  • 익절: +{self.take_profit*100}%\n"
+        msg += f"  • 손절: {self.stop_loss*100}%\n"
+        msg += f"  • 다중 시간대: 1H + 4H\n"
+        msg += f"  • 체크: 5분마다\n\n"
+        msg += f"📊 추세별 매수:\n"
+        msg += f"  • 🚀 강한상승: RSI < 40\n"
+        msg += f"  • 📊 조정: RSI < 35\n"
+        msg += f"  • ⚡ 약한반등: RSI < 30\n"
+        msg += f"  • 🔻 강한하락: 매수금지"
+
+        self.telegram.send_message(msg)
+    
+    def check_telegram_commands(self):
+        """명령어 체크 (백그라운드 처리)"""
+        try:
+            updates = self.telegram.get_updates(self.last_update_id)
+
+            if not updates or 'result' not in updates:
+                return
+
+            for update in updates['result']:
+                self.last_update_id = update['update_id'] + 1
+
+                if 'message' in update and 'text' in update['message']:
+                    text = update['message']['text'].strip()
+
+                    if text.startswith('/'):
+                        self.log(f"명령어: {text}")
+                        # 백그라운드로 실행하여 메인 루프 차단 방지
+                        self.executor.submit(self.handle_command, text)
+
+        except Exception as e:
+            pass
+    
+    def initialize(self):
+        """초기화"""
+        try:
+            status = self.get_current_status()
+            
+            self.log(f"\n{'='*50}")
+            self.log(f"초기화")
+            self.log(f"원화: {status['krw']:,.0f}원")
+            self.log(f"코인: {status['coin']:.6f} ETH")
+            self.log(f"총자산: {status['total']:,.0f}원")
+            
+            # 기존 코인
+            if status['coin'] >= 0.001:
+                buy_price = status['avg_price'] if status['avg_price'] > 0 else status['current_price']
+                
+                self.position = {
+                    'buy_price': buy_price,
+                    'buy_time': datetime.now(),
+                    'amount': status['coin'],
+                    'buy_krw': status['coin'] * buy_price
+                }
+                
+                profit_rate = (status['current_price'] - buy_price) / buy_price * 100
+                
+                msg = f"💼 <b>기존 포지션</b>\n━━━━━━━━━━━━━━━━━\n\n"
+                msg += f"🪙 {status['coin']:.6f} ETH\n"
+                msg += f"📊 매수가: {buy_price:,.0f}원\n"
+                msg += f"📊 현재가: {status['current_price']:,.0f}원\n"
+                msg += f"💵 수익률: {profit_rate:+.2f}%\n\n"
+                msg += f"✅ 감시 시작!"
+                
+                self.telegram.send_message(msg)
+                self.log("✅ 기존 포지션")
+            
+            else:
+                mode_tag = "🧪 [시뮬레이션 모드]" if self.dry_run else ""
+                msg = f"💰 <b>봇 시작</b> {mode_tag}\n━━━━━━━━━━━━━━━━━\n\n"
+                msg += f"💵 원화: {status['krw']:,.0f}원\n"
+                msg += f"✅ 매수 신호 대기\n\n"
+                msg += f"⚙️ 전략:\n"
+                msg += f"  • 다중 시간대 분석 (1H + 4H)\n"
+                msg += f"  • 익절 {self.take_profit*100}% / 손절 {abs(self.stop_loss)*100}%\n"
+                msg += f"  • 거래량 기준 {self.volume_threshold}배"
+
+                self.telegram.send_message(msg)
+                self.log("✅ 신호 대기")
+                
+        except Exception as e:
+            self.log(f"초기화 실패: {e}")
+    
+    def log(self, msg):
+        """로그"""
+        print(msg)
+    
+    def run(self, interval=300):
+        """실행"""
+        self.initialize()
+        self.send_help()
+
+        self.log(f"\n🤖 봇 시작 ({interval}초 체크)")
+
+        try:
+            while self.is_running:
+                self.check_and_trade()
+                self.check_daily_report()
+                self.check_telegram_commands()
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            self.log("\n봇 종료")
+            self.telegram.send_message("⏹️ 봇 중지")
+        finally:
+            # 백그라운드 작업 정리
+            self.executor.shutdown(wait=True)
+
+
+# ===== 실행 =====
+if __name__ == "__main__":
+    from config import get_config
+
+    try:
+        # .env 파일에서 설정 로드
+        config = get_config()
+
+        print("✅ 설정 로드 완료")
+        print(f"Market: {config['market']}")
+        print(f"Check Interval: {config['check_interval']}초\n")
+
+        # 실행
+        upbit = UpbitAPI(config['upbit_access_key'], config['upbit_secret_key'])
+        telegram = TelegramBot(config['telegram_token'], config['telegram_chat_id'])
+        bot = TradingBot(upbit, telegram, config['market'])
+        bot.run(config['check_interval'])
+
+    except Exception as e:
+        print(f"❌ 봇 시작 실패: {e}")
+        print("\n.env 파일을 확인해주세요.")
