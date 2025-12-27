@@ -7,6 +7,7 @@ from trading_indicators import TechnicalIndicators
 from advanced_strategy import AdvancedIndicators
 from market_scanner import MarketScanner
 from advanced_features import VolatilityManager, TimeBasedStrategy, AdvancedRiskManager
+from database_manager import DatabaseManager
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -45,19 +46,20 @@ class TradingBot:
     """자동매매 봇"""
     
     def __init__(self, upbit, telegram, market="KRW-ETH", dry_run=False, signal_timeframe=15,
-                 enable_multi_coin=False):
+                 enable_multi_coin=False, db=None):
         self.upbit = upbit
         self.telegram = telegram
         self.market = market
         self.dry_run = dry_run  # 시뮬레이션 모드
         self.signal_timeframe = signal_timeframe  # 신호 타임프레임 (5, 15, 60분)
         self.enable_multi_coin = enable_multi_coin  # 멀티 코인 모드
+        self.db = db  # 데이터베이스 매니저 (선택적)
 
         # 전략 파라미터 (다층 익절 시스템)
         self.rsi_buy = 35            # 30 → 35 (더 많은 기회)
         self.rsi_sell = 70           # 70 유지
 
-        # 다층 익절 전략 (빠른 수익 실현)
+        # 다층 익절 전략 (빠른 수익 실현) - 기본값
         self.quick_profit = 0.008    # 0.8% 퀵 익절 (30분 이내)
         self.take_profit_1 = 0.015   # 1.5% 1차 익절
         self.take_profit_2 = 0.025   # 2.5% 2차 익절
@@ -76,6 +78,9 @@ class TradingBot:
         self.bb_period = 20
         self.bb_std = 2
         self.volume_threshold = 1.2  # 1.3 → 1.2 (더욱 완화)
+
+        # DB에서 최적 파라미터 로드
+        self.load_optimized_parameters()
 
         # 멀티 코인 설정
         self.market_scanner = MarketScanner(upbit) if enable_multi_coin else None
@@ -98,7 +103,46 @@ class TradingBot:
             self.virtual_krw = 1000000  # 100만원
             self.virtual_coin = 0
             self.virtual_avg_price = 0
-    
+
+    def load_optimized_parameters(self):
+        """데이터베이스에서 최적화된 파라미터 로드"""
+        if not self.db:
+            return
+
+        try:
+            params = self.db.get_active_parameters(self.market)
+
+            if params:
+                self.quick_profit = params['quick_profit']
+                self.take_profit_1 = params['take_profit_1']
+                self.take_profit_2 = params.get('take_profit_2', 0.025)
+                self.stop_loss = params['stop_loss']
+                self.trailing_stop_tight = params['trailing_stop_tight']
+                self.trailing_stop_medium = params.get('trailing_stop_medium', 0.005)
+                self.trailing_stop_wide = params.get('trailing_stop_wide', 0.008)
+
+                print(f"✅ DB에서 최적 파라미터 로드 완료 ({self.market})")
+                print(f"   최적화 일자: {params['last_optimized']}")
+                print(f"   퀵익절: {self.quick_profit*100:.1f}%")
+                print(f"   1차익절: {self.take_profit_1*100:.1f}%")
+                print(f"   손절: {self.stop_loss*100:.1f}%")
+            else:
+                print(f"ℹ️  {self.market} 최적화 데이터 없음, 기본 파라미터 사용")
+
+        except Exception as e:
+            print(f"⚠️ 파라미터 로드 실패, 기본값 사용: {e}")
+
+    def save_trade_to_db(self, trade_data):
+        """거래 기록을 데이터베이스에 저장"""
+        if not self.db:
+            return
+
+        try:
+            self.db.save_trade(trade_data)
+            print(f"✅ 거래 기록 DB 저장 완료")
+        except Exception as e:
+            print(f"⚠️ 거래 기록 저장 실패: {e}")
+
     def get_current_status(self):
         """현재 계좌 및 시장 상태"""
         # 드라이런 모드
@@ -397,17 +441,27 @@ class TradingBot:
 
             sell_krw = coin * price
             profit = sell_krw - self.position['buy_krw']
-            
-            self.trade_history.append({
+
+            # 거래 기록 생성
+            trade_record = {
+                'market': self.market,
                 'type': 'SELL',
                 'time': datetime.now(),
                 'price': price,
-                'amount': sell_krw,
+                'amount': coin,
+                'krw_amount': sell_krw,
                 'profit': profit,
-                'profit_rate': profit_rate,
-                'reason': reason
-            })
-            
+                'profit_rate': profit_rate / 100,  # DB에는 0.01 형식으로 저장
+                'reason': reason,
+                'hold_time_minutes': int(hold_hours * 60),
+                'peak_profit': self.position_peak_profit
+            }
+
+            self.trade_history.append(trade_record)
+
+            # 데이터베이스에 저장
+            self.save_trade_to_db(trade_record)
+
             emoji = "🟢" if profit > 0 else "🔴"
             mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
             msg = f"{mode_prefix}{emoji} <b>매도 완료</b>\n━━━━━━━━━━━━━━━━━\n\n"

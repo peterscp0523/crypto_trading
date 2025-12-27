@@ -12,6 +12,10 @@
 - 🔄 **자동 배포** (GitHub Actions → Oracle Cloud)
 - 🧪 **드라이런 모드** (실제 거래 없이 시뮬레이션)
 - 📈 **백테스팅** (과거 데이터로 전략 검증)
+- 🔍 **자동 파라미터 최적화** (백테스팅 기반 자동 조정)
+- 💾 **Oracle Cloud DB 연동** (Always Free Tier)
+- 📊 **변동성 기반 포지션 사이징** (ATR 활용)
+- ⏰ **시간대별 전략 조절** (아시아/유럽/미국장)
 
 ## 🚀 빠른 시작
 
@@ -69,18 +73,25 @@ python run_multi_coin.py
 
 ```
 crypto_trading/
-├── telegram_bot.py       # 메인 트레이딩 봇
-├── upbit_api.py          # 업비트 API 래퍼
-├── trading_indicators.py # 기술적 지표
-├── advanced_strategy.py  # 고급 전략
-├── backtest.py           # 백테스팅 엔진
-├── run_dry_run.py        # 드라이런 모드
-├── test_5m.py            # 타임프레임 비교 테스트
-├── config.py             # 환경변수 로더
-├── Dockerfile            # Docker 이미지
-├── .github/workflows/    # GitHub Actions
-│   └── deploy.yml        # 자동 배포 워크플로우
-└── DEPLOYMENT.md         # 배포 가이드
+├── telegram_bot.py         # 메인 트레이딩 봇
+├── upbit_api.py            # 업비트 API 래퍼
+├── trading_indicators.py   # 기술적 지표
+├── advanced_strategy.py    # 고급 전략
+├── advanced_features.py    # 변동성/시간대별 전략
+├── market_scanner.py       # 멀티 코인 모멘텀 스캐너
+├── parameter_optimizer.py  # 파라미터 최적화 엔진
+├── database_manager.py     # Oracle/SQLite DB 관리
+├── data_collector.py       # 캔들 데이터 수집 스케줄러
+├── auto_optimizer.py       # 자동 최적화 스케줄러
+├── backtest.py             # 백테스팅 엔진
+├── run_multi_coin.py       # 멀티 코인 모드 실행
+├── run_dry_run.py          # 드라이런 모드
+├── config.py               # 환경변수 로더
+├── Dockerfile              # Docker 이미지 (Oracle Client 포함)
+├── .github/workflows/      # GitHub Actions
+│   └── deploy.yml          # 자동 배포 워크플로우
+├── DEPLOYMENT.md           # 배포 가이드
+└── ORACLE_DB_SETUP.md      # Oracle DB 설정 가이드
 ```
 
 ## 🛠️ 설정
@@ -88,12 +99,23 @@ crypto_trading/
 ### 필수 환경변수 (.env)
 
 ```bash
+# 업비트 API
 UPBIT_ACCESS_KEY=your_access_key
 UPBIT_SECRET_KEY=your_secret_key
+
+# 텔레그램
 TELEGRAM_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_telegram_chat_id
+
+# 트레이딩 설정
 MARKET=KRW-ETH
 CHECK_INTERVAL=300
+
+# 데이터베이스 (선택적)
+USE_ORACLE_DB=false  # Oracle DB 사용 여부
+ORACLE_DB_USER=ADMIN
+ORACLE_DB_PASSWORD=your_db_password
+ORACLE_DB_DSN=cryptodb_medium
 ```
 
 ## 📱 텔레그램 명령어

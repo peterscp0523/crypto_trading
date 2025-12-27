@@ -45,6 +45,17 @@ jobs:
           username: ${{ secrets.ORACLE_USERNAME }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
+            # Wallet 디렉토리 준비 (Oracle DB 사용 시)
+            mkdir -p /tmp/wallet
+
+            # Wallet 파일 디코딩 및 압축 해제 (선택적)
+            if [ -n "${{ secrets.ORACLE_WALLET_BASE64 }}" ]; then
+              echo "${{ secrets.ORACLE_WALLET_BASE64 }}" | base64 -d > /tmp/wallet.zip
+              unzip -o /tmp/wallet.zip -d /tmp/wallet
+              rm /tmp/wallet.zip
+              echo "✅ Oracle Wallet 설정 완료"
+            fi
+
             # Docker 이미지 로드 (압축 해제하면서)
             gunzip -c /tmp/crypto-bot.tar.gz | docker load
 
@@ -56,6 +67,7 @@ jobs:
             docker run -d \
               --name crypto-trading-bot \
               --restart unless-stopped \
+              -v /tmp/wallet:/app/wallet \
               -e UPBIT_ACCESS_KEY="${{ secrets.UPBIT_ACCESS_KEY }}" \
               -e UPBIT_SECRET_KEY="${{ secrets.UPBIT_SECRET_KEY }}" \
               -e TELEGRAM_TOKEN="${{ secrets.TELEGRAM_TOKEN }}" \
@@ -63,6 +75,11 @@ jobs:
               -e MARKET="${{ secrets.MARKET }}" \
               -e CHECK_INTERVAL="${{ secrets.CHECK_INTERVAL }}" \
               -e ENABLE_MULTI_COIN="true" \
+              -e USE_ORACLE_DB="${{ secrets.USE_ORACLE_DB }}" \
+              -e ORACLE_DB_USER="${{ secrets.ORACLE_DB_USER }}" \
+              -e ORACLE_DB_PASSWORD="${{ secrets.ORACLE_DB_PASSWORD }}" \
+              -e ORACLE_DB_DSN="${{ secrets.ORACLE_DB_DSN }}" \
+              -e TNS_ADMIN="/app/wallet" \
               ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
 
             # 정리
