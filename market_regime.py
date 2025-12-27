@@ -49,8 +49,8 @@ class MarketRegimeDetector:
             btc_ma20_4h = sum(btc_prices_4h[:20]) / 20
             btc_ma50_4h = sum(btc_prices_4h[:50]) / 50
 
-            # 주요 알트코인 추세 분석
-            major_alts = ['KRW-ETH', 'KRW-XRP', 'KRW-SOL', 'KRW-ADA']
+            # 주요 알트코인 추세 분석 (리소스 최적화: 2개만)
+            major_alts = ['KRW-ETH', 'KRW-XRP']  # 4개 → 2개 (API 호출 절반)
             alt_trends = []
 
             for market in major_alts:

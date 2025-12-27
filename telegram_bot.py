@@ -119,7 +119,8 @@ class TradingBot:
         self.position_peak_profit = 0
         self.position_lowest_profit = 0
         self.last_update_id = None
-        self.executor = ThreadPoolExecutor(max_workers=3)
+        # 리소스 최적화: Always Free Tier (1 OCPU)에 맞게 조정
+        self.executor = ThreadPoolExecutor(max_workers=1)
 
         # 일일 손실 제한 (Tier 1 개선)
         self.max_daily_loss = -0.03  # -3%
@@ -137,6 +138,10 @@ class TradingBot:
         self.auto_optimize = True  # 자동 최적화 활성화
         self.last_optimization_date = None  # 마지막 최적화 날짜
         self.optimization_interval_days = 7  # 7일마다 재최적화
+
+        # 리소스 최적화: 신호 캐싱 (1 OCPU VM 대응)
+        self.signal_cache = {}  # {timeframe: (timestamp, signals)}
+        self.signal_cache_duration = 30  # 30초간 캐시 유지
 
         # 드라이런 모드용 가상 잔고
         if self.dry_run:
@@ -293,9 +298,19 @@ class TradingBot:
     def get_signals(self, timeframe=15):
         """시장 분석 및 신호 (다중 시간대 포함, Tier 1 개선: 스마트 볼륨 필터)
 
+        리소스 최적화: 캐싱으로 불필요한 API 호출 감소
+
         Args:
             timeframe: 5, 15, 60 등 (분 단위)
         """
+        # 캐시 확인 (리소스 최적화)
+        now = datetime.now()
+        cache_key = f"{self.market}_{timeframe}"
+        if cache_key in self.signal_cache:
+            cached_time, cached_signals = self.signal_cache[cache_key]
+            if (now - cached_time).total_seconds() < self.signal_cache_duration:
+                return cached_signals
+
         candles = self.upbit.get_candles(self.market, "minutes", timeframe, 50)
         if len(candles) < 50:
             return None
@@ -360,7 +375,7 @@ class TradingBot:
             # 추세 분석 실패: 극도의 과매도 + 볼륨
             buy_signal = (rsi < 25 and current_price <= lower * 1.01 and volume_ok)
 
-        return {
+        signals = {
             'price': current_price,
             'rsi': rsi,
             'upper': upper,
@@ -373,6 +388,11 @@ class TradingBot:
             'buy': buy_signal,
             'sell': rsi > self.rsi_sell and current_price >= upper * 0.99
         }
+
+        # 캐시 저장 (리소스 최적화)
+        self.signal_cache[cache_key] = (now, signals)
+
+        return signals
     
     def buy(self, status, signals):
         """매수 실행 (고급 기능 통합)"""
