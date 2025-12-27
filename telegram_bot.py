@@ -8,6 +8,7 @@ from advanced_strategy import AdvancedIndicators
 from market_scanner import MarketScanner
 from advanced_features import VolatilityManager, TimeBasedStrategy, AdvancedRiskManager
 from database_manager import DatabaseManager
+from market_regime import MarketRegimeDetector  # Tier 3 개선
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -65,7 +66,25 @@ class TradingBot:
         self.take_profit_2 = 0.025   # 2.5% 2차 익절
         self.take_profit_3 = 0.04    # 4.0% 최종 익절
 
-        self.stop_loss = -0.015      # -2% → -1.5% (더 빠른 손절)
+        self.stop_loss = -0.015      # -2% → -1.5% (더 빠른 손절, 기본값)
+
+        # Tier 2 개선: 적응형 손절 (변동성 기반)
+        self.adaptive_stop_loss = True  # 적응형 손절 활성화
+        self.stop_loss_min = -0.008     # 최소 손절: -0.8% (저변동성)
+        self.stop_loss_max = -0.015     # 최대 손절: -1.5% (고변동성)
+
+        # Tier 2 개선: 시간 기반 익절 완화
+        self.time_based_profit_relaxation = True  # 시간 기반 익절 완화 활성화
+        self.relaxation_time_minutes = 30         # 30분 이후 완화
+        self.profit_relaxation_amount = 0.003     # -0.3%p 완화
+
+        # 부분 익절 전략 (Tier 1 개선)
+        self.enable_partial_sell = True  # 부분 익절 활성화
+        self.partial_sell_ratios = [
+            (0.015, 0.50),  # 1.5% 도달 시 50% 매도
+            (0.025, 0.30),  # 2.5% 도달 시 30% 매도 (남은 것의)
+            (0.040, 0.20),  # 4.0% 도달 시 20% 매도 (남은 것의)
+        ]
 
         # 동적 트레일링 스톱
         self.trailing_stop_tight = 0.003   # 0.3% 수익 이후 -0.3% 트레일링
@@ -87,6 +106,10 @@ class TradingBot:
         self.coin_switch_score_diff = 20  # 코인 전환 최소 점수 차이
         self.last_coin_scan = None
 
+        # Tier 3 개선: 시장 상태 감지
+        self.market_regime_detector = MarketRegimeDetector(upbit)
+        self.use_market_regime = True  # 시장 상태 기반 조정 활성화
+
         # 상태
         self.position = None
         self.trade_history = []
@@ -97,6 +120,23 @@ class TradingBot:
         self.position_lowest_profit = 0
         self.last_update_id = None
         self.executor = ThreadPoolExecutor(max_workers=3)
+
+        # 일일 손실 제한 (Tier 1 개선)
+        self.max_daily_loss = -0.03  # -3%
+        self.daily_pnl = 0
+        self.daily_pnl_reset_date = datetime.now().date()
+        self.trading_paused = False
+        self.consecutive_losses = 0  # 연속 손실 카운트
+
+        # 동적 스캔 빈도 (Tier 1 개선)
+        self.base_check_interval = 300  # 기본 5분
+        self.current_check_interval = 300
+        self.last_atr_check = None
+
+        # Tier 4 개선: 실시간 파라미터 최적화
+        self.auto_optimize = True  # 자동 최적화 활성화
+        self.last_optimization_date = None  # 마지막 최적화 날짜
+        self.optimization_interval_days = 7  # 7일마다 재최적화
 
         # 드라이런 모드용 가상 잔고
         if self.dry_run:
@@ -251,7 +291,7 @@ class TradingBot:
             return None
     
     def get_signals(self, timeframe=15):
-        """시장 분석 및 신호 (다중 시간대 포함)
+        """시장 분석 및 신호 (다중 시간대 포함, Tier 1 개선: 스마트 볼륨 필터)
 
         Args:
             timeframe: 5, 15, 60 등 (분 단위)
@@ -273,31 +313,52 @@ class TradingBot:
         current_price = prices[0]
         current_vol = volumes[0]
         bb_pos = ((current_price - lower) / (upper - lower)) * 100
+        vol_ratio = current_vol / vol_ma
 
         # 다중 시간대 추세 분석
         trend = self.get_trend_analysis()
 
-        # 매수 조건 (완화됨 - 거래량 조건 제거/완화)
+        # === 스마트 볼륨 필터 (Tier 1 개선) ===
+        # 시간대별 동적 임계값
+        if timeframe == 1:
+            base_vol_threshold = 1.5  # 1분봉: 급등 포착
+        elif timeframe == 5:
+            base_vol_threshold = 1.3  # 5분봉
+        elif timeframe == 15:
+            base_vol_threshold = 1.2  # 15분봉 (기본)
+        else:
+            base_vol_threshold = 1.1  # 더 긴 시간대
+
+        # 추세 강할 때 완화 (0.8배)
+        if trend and trend['trend_state'] in ['strong_bull', 'correction']:
+            vol_threshold = base_vol_threshold * 0.8
+        else:
+            vol_threshold = base_vol_threshold
+
+        # 거래량 조건 체크
+        volume_ok = vol_ratio >= vol_threshold
+
+        # 매수 조건 (스마트 볼륨 필터 적용)
         buy_signal = False
         if trend and trend['buy_allowed']:
             rsi_threshold = trend['rsi_threshold']
 
-            # 추세별 조건
+            # 추세별 조건 + 볼륨 필터
             if trend['trend_state'] == 'strong_bull':
-                # 강한 상승: RSI만 체크
-                buy_signal = (rsi < rsi_threshold)
+                # 강한 상승: RSI + 볼륨
+                buy_signal = (rsi < rsi_threshold and volume_ok)
             elif trend['trend_state'] == 'correction':
-                # 조정: RSI + 볼린저 완화
-                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.05)
+                # 조정: RSI + 볼린저 완화 + 볼륨
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.05 and volume_ok)
             elif trend['trend_state'] == 'weak_bounce':
-                # 약한 반등: RSI + 볼린저
-                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.03)
+                # 약한 반등: RSI + 볼린저 + 볼륨
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.03 and volume_ok)
             elif trend['trend_state'] == 'strong_bear':
-                # 강한 하락: 과매도 + 볼린저 하단
-                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.02)
+                # 강한 하락: 과매도 + 볼린저 하단 + 볼륨
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.02 and volume_ok)
         else:
-            # 추세 분석 실패: 극도의 과매도만
-            buy_signal = (rsi < 25 and current_price <= lower * 1.01)
+            # 추세 분석 실패: 극도의 과매도 + 볼륨
+            buy_signal = (rsi < 25 and current_price <= lower * 1.01 and volume_ok)
 
         return {
             'price': current_price,
@@ -305,7 +366,9 @@ class TradingBot:
             'upper': upper,
             'lower': lower,
             'bb_pos': bb_pos,
-            'vol_ratio': current_vol / vol_ma,
+            'vol_ratio': vol_ratio,
+            'vol_threshold': vol_threshold,  # 현재 적용된 임계값
+            'volume_ok': volume_ok,  # 볼륨 조건 충족 여부
             'trend': trend,
             'buy': buy_signal,
             'sell': rsi > self.rsi_sell and current_price >= upper * 0.99
@@ -373,34 +436,116 @@ class TradingBot:
             trend_emoji = {"strong_bull": "🚀", "correction": "📊", "weak_bounce": "⚡", "strong_bear": "🔻"}
             trend_name = {"strong_bull": "강한상승", "correction": "조정", "weak_bounce": "약한반등", "strong_bear": "강한하락"}
 
-            mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
-            msg = f"{mode_prefix}🔵 <b>매수 완료</b>\n━━━━━━━━━━━━━━━━━\n\n"
-            msg += f"⏰ {session['name']} (공격성: {session['aggression']})\n"
-            msg += f"💰 금액: {position_krw:,.0f}원 / {krw:,.0f}원 ({position_krw/krw*100:.0f}%)\n"
-            msg += f"📊 가격: {price:,.0f}원\n"
-            msg += f"🪙 수량: {amount:.6f} {self.market.split('-')[1]}\n\n"
+            # 시장 상태 가져오기
+            market_regime = None
+            if self.use_market_regime and self.market_regime_detector.current_regime:
+                market_regime = self.market_regime_detector.current_regime
 
+            # 다중 시간대 신호 강도
+            signal_strength = ""
+            if 'buy_signal_count' in signals:
+                count = signals['buy_signal_count']
+                if count == 3:
+                    signal_strength = "🔥 매우 강함"
+                elif count == 2:
+                    signal_strength = "✅ 강함"
+                else:
+                    signal_strength = "⚠️ 약함"
+
+            mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
+            msg = f"{mode_prefix}🔵 <b>매수 완료</b>\n"
+            msg += f"{'='*30}\n\n"
+
+            # 코인 정보
+            msg += f"🪙 <b>{self.market.replace('KRW-', '')}</b>\n"
+            msg += f"💰 <b>{price:,.0f}원</b> × {amount:.6f}\n"
+            msg += f"💵 투자금: <b>{position_krw:,.0f}원</b> ({position_krw/krw*100:.0f}% 사용)\n"
+            msg += f"💼 잔액: {krw - position_krw:,.0f}원\n\n"
+
+            # 시간 및 세션 정보
+            msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            msg += f"📅 {session['name']} (공격성: {session['aggression']}, 변동성: {session['volatility']})\n\n"
+
+            # 시장 상태 (Tier 3)
+            if market_regime:
+                regime_emoji = {"bull": "🐂", "bear": "🐻", "sideways": "↔️"}
+                msg += f"🌍 <b>시장 상태</b>\n"
+                msg += f"  • {regime_emoji.get(market_regime['regime'])} {market_regime['regime'].upper()}"
+                msg += f" (신뢰도: {market_regime['strength']:.0f}%)\n"
+                msg += f"  • BTC 추세: {market_regime['btc_trend'].upper()}"
+                msg += f" (RSI: {market_regime['btc_rsi_1h']:.1f})\n"
+                msg += f"  • 시장 심리: {market_regime['market_sentiment']:.0f}%\n\n"
+
+            # 매수 신호 강도 (Tier 2)
+            if signal_strength:
+                msg += f"📶 <b>신호 강도</b>: {signal_strength}\n"
+                msg += f"  • 1분봉: {'✅' if signals['multi_timeframe']['1m']['buy'] else '❌'}\n"
+                msg += f"  • 5분봉: {'✅' if signals['multi_timeframe']['5m']['buy'] else '❌'}\n"
+                msg += f"  • 15분봉: {'✅' if signals['multi_timeframe']['15m']['buy'] else '❌'}\n\n"
+
+            # 추세 분석
             if signals.get('trend'):
                 trend = signals['trend']
                 state = trend['trend_state']
-                msg += f"📈 추세: {trend_emoji.get(state, '📊')} {trend_name.get(state, state)}\n"
-                msg += f"  • 1H: {'↑' if trend['trend_1h'] == 'up' else '↓'} RSI {trend['rsi_1h']:.1f}\n"
-                msg += f"  • 4H: {'↑' if trend['trend_4h'] == 'up' else '↓'} RSI {trend['rsi_4h']:.1f}\n\n"
+                msg += f"📈 <b>추세 분석</b>\n"
+                msg += f"  • 상태: {trend_emoji.get(state, '📊')} {trend_name.get(state, state)}\n"
+                msg += f"  • 1H: {'🔼' if trend['trend_1h'] == 'up' else '🔽'} RSI {trend['rsi_1h']:.1f}"
+                msg += f" (MA20: {trend['ma20_1h']:,.0f})\n"
+                msg += f"  • 4H: {'🔼' if trend['trend_4h'] == 'up' else '🔽'} RSI {trend['rsi_4h']:.1f}"
+                msg += f" (MA20: {trend['ma20_4h']:,.0f})\n\n"
 
-            msg += f"📊 지표:\n"
-            msg += f"  • RSI: {signals['rsi']:.1f}\n"
-            msg += f"  • 볼린저: {signals['bb_pos']:.1f}%\n"
-            msg += f"  • 거래량: {signals['vol_ratio']:.2f}x\n\n"
-            msg += f"🎯 익절 목표 (다층):\n"
-            msg += f"  • ⚡ 퀵: {price * (1 + self.quick_profit):,.0f}원 (+{self.quick_profit*100:.1f}%, 30분내)\n"
-            msg += f"  • 1차: {price * (1 + self.take_profit_1):,.0f}원 (+{self.take_profit_1*100:.1f}%)\n"
-            msg += f"  • 2차: {price * (1 + self.take_profit_2):,.0f}원 (+{self.take_profit_2*100:.1f}%)\n"
-            msg += f"  • 최종: {price * (1 + self.take_profit_3):,.0f}원 (+{self.take_profit_3*100:.0f}%)\n\n"
-            msg += f"🛡️ 리스크 관리:\n"
-            msg += f"  • 손절: {price * (1 + self.stop_loss):,.0f}원 ({self.stop_loss*100:.1f}%)\n"
-            msg += f"  • 트레일링: 0.3%↑시 -0.3%, 0.8%↑시 -0.5%, 1.5%↑시 -0.8%\n"
+            # 기술적 지표
+            msg += f"📊 <b>기술적 지표</b>\n"
+            msg += f"  • RSI(15m): {signals['rsi']:.1f}"
+            msg += f" ({'과매도' if signals['rsi'] < 30 else '중립' if signals['rsi'] < 70 else '과매수'})\n"
+            msg += f"  • 볼린저밴드: {signals['bb_pos']:.1f}%"
+            msg += f" ({'하단' if signals['bb_pos'] < 20 else '중간' if signals['bb_pos'] < 80 else '상단'})\n"
+            msg += f"  • 거래량: {signals['vol_ratio']:.2f}x"
+            msg += f" (기준: {signals.get('vol_threshold', 1.2):.2f}x)"
+            if signals.get('volume_ok'):
+                msg += " ✅\n"
+            else:
+                msg += " ⚠️\n"
+            msg += f"  • 가격: {price:,.0f}원\n"
+            msg += f"  • 상한: {signals['upper']:,.0f}원 (+{((signals['upper']-price)/price)*100:.1f}%)\n"
+            msg += f"  • 하한: {signals['lower']:,.0f}원 ({((signals['lower']-price)/price)*100:.1f}%)\n\n"
+
+            # 익절 목표 (부분 익절 포함)
+            msg += f"🎯 <b>익절 목표</b> (부분 익절 전략)\n"
+            msg += f"  • ⚡ 퀵 (30분): {price * (1 + self.quick_profit):,.0f}원"
+            msg += f" (+{self.quick_profit*100:.1f}%) → 100% 매도\n"
+            msg += f"  • 🥉 1차: {price * (1 + self.take_profit_1):,.0f}원"
+            msg += f" (+{self.take_profit_1*100:.1f}%) → 50% 매도\n"
+            msg += f"  • 🥈 2차: {price * (1 + self.take_profit_2):,.0f}원"
+            msg += f" (+{self.take_profit_2*100:.1f}%) → 30% 매도\n"
+            msg += f"  • 🥇 최종: {price * (1 + self.take_profit_3):,.0f}원"
+            msg += f" (+{self.take_profit_3*100:.0f}%) → 100% 매도\n\n"
+
+            # 리스크 관리
+            adaptive_sl = self.get_adaptive_stop_loss() if hasattr(self, 'get_adaptive_stop_loss') else self.stop_loss
+            msg += f"🛡️ <b>리스크 관리</b>\n"
+            msg += f"  • 손절: {price * (1 + adaptive_sl):,.0f}원"
+            msg += f" ({adaptive_sl*100:.2f}%)"
+            if self.adaptive_stop_loss:
+                msg += " 📊 적응형\n"
+            else:
+                msg += "\n"
+            msg += f"  • 트레일링 스톱:\n"
+            msg += f"    - 0.3% 도달 → -0.3% 트레일링\n"
+            msg += f"    - 0.8% 도달 → -0.5% 트레일링\n"
+            msg += f"    - 1.5% 도달 → -0.8% 트레일링\n"
             msg += f"  • 타임아웃: {self.position_timeout_hours}시간\n"
-            msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            msg += f"  • 일일 손익: {self.daily_pnl*100:.2f}% (한도: {self.max_daily_loss*100:.0f}%)\n\n"
+
+            # 거래 통계
+            if len(self.trade_history) > 1:
+                recent_trades = self.trade_history[-10:]
+                wins = sum(1 for t in recent_trades if t.get('profit', 0) > 0)
+                win_rate = (wins / len(recent_trades)) * 100 if recent_trades else 0
+                msg += f"📈 <b>최근 거래 성과</b> (최근 {len(recent_trades)}건)\n"
+                msg += f"  • 승률: {win_rate:.0f}% ({wins}승 {len(recent_trades)-wins}패)\n\n"
+
+            msg += f"{'='*30}"
             
             self.telegram.send_message(msg)
             self.log("✅ 매수 완료")
@@ -462,19 +607,90 @@ class TradingBot:
             # 데이터베이스에 저장
             self.save_trade_to_db(trade_record)
 
-            emoji = "🟢" if profit > 0 else "🔴"
+            # 수익 여부에 따른 이모지
+            if profit > 0:
+                emoji = "🟢"
+                result_text = "익절 성공"
+            else:
+                emoji = "🔴"
+                result_text = "손절 실행"
+
             mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
-            msg = f"{mode_prefix}{emoji} <b>매도 완료</b>\n━━━━━━━━━━━━━━━━━\n\n"
-            msg += f"💰 금액: {sell_krw:,.0f}원\n"
-            msg += f"📊 가격: {price:,.0f}원\n"
-            msg += f"📈 매수가: {buy_price:,.0f}원\n\n"
-            msg += f"💵 <b>수익: {profit:+,.0f}원 ({profit_rate:+.2f}%)</b>\n\n"
-            msg += f"📊 통계:\n"
-            msg += f"  • 보유: {hold_hours:.1f}시간\n"
-            msg += f"  • 최고: {self.position_peak_profit*100:+.2f}%\n"
-            msg += f"  • 최저: {self.position_lowest_profit*100:+.2f}%\n\n"
-            msg += f"📝 사유: {reason}\n"
-            msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            msg = f"{mode_prefix}{emoji} <b>매도 완료 - {result_text}</b>\n"
+            msg += f"{'='*30}\n\n"
+
+            # 코인 및 거래 정보
+            msg += f"🪙 <b>{self.market.replace('KRW-', '')}</b>\n"
+            msg += f"💰 매도가: <b>{price:,.0f}원</b>\n"
+            msg += f"📈 매수가: {buy_price:,.0f}원\n"
+            msg += f"📊 수량: {coin:.6f}\n\n"
+
+            # 수익 정보 (강조)
+            profit_emoji = "💰" if profit > 0 else "💸"
+            msg += f"{profit_emoji} <b>{'수익' if profit > 0 else '손실'}</b>\n"
+            msg += f"  • 금액: <b>{profit:+,.0f}원</b>\n"
+            msg += f"  • 수익률: <b>{profit_rate:+.2f}%</b>\n"
+            if profit > 0:
+                expected_amount = sell_krw + profit
+                msg += f"  • 총 회수: {sell_krw:,.0f}원\n\n"
+            else:
+                msg += f"  • 총 회수: {sell_krw:,.0f}원\n\n"
+
+            # 보유 기간 및 성과
+            hold_days = int(hold_hours // 24)
+            remaining_hours = hold_hours % 24
+            msg += f"⏱️ <b>보유 기간</b>\n"
+            if hold_days > 0:
+                msg += f"  • {hold_days}일 {remaining_hours:.1f}시간\n"
+            else:
+                msg += f"  • {hold_hours:.1f}시간\n"
+            msg += f"  • 최고 수익률: {self.position_peak_profit*100:+.2f}%\n"
+            msg += f"  • 최저 수익률: {self.position_lowest_profit*100:+.2f}%\n"
+
+            # 수익 포기 계산 (최고점 대비)
+            if self.position_peak_profit > 0:
+                missed_profit = (self.position_peak_profit - (profit_rate/100)) * 100
+                if missed_profit > 0:
+                    msg += f"  • 최고점 대비: -{missed_profit:.2f}%p ⬇️\n"
+            msg += "\n"
+
+            # 매도 사유
+            msg += f"📝 <b>매도 사유</b>: {reason}\n\n"
+
+            # 현재 시장 상태
+            msg += f"📊 <b>시장 정보</b>\n"
+            msg += f"  • RSI: {signals['rsi']:.1f}"
+            msg += f" ({'과매도' if signals['rsi'] < 30 else '중립' if signals['rsi'] < 70 else '과매수'})\n"
+            msg += f"  • 가격 위치: {signals['bb_pos']:.0f}%"
+            msg += f" ({'하단' if signals['bb_pos'] < 20 else '중간' if signals['bb_pos'] < 80 else '상단'})\n\n"
+
+            # 일일 손익 업데이트
+            projected_daily_pnl = (self.daily_pnl + (profit / 1000000)) * 100
+            msg += f"📈 <b>일일 누적</b>\n"
+            msg += f"  • 오늘 손익: {projected_daily_pnl:+.2f}%"
+            if projected_daily_pnl > 0:
+                msg += " 🔥\n"
+            elif projected_daily_pnl < -2:
+                msg += " ⚠️\n"
+            else:
+                msg += "\n"
+            msg += f"  • 일일 한도: {self.max_daily_loss*100:.0f}%\n\n"
+
+            # 최근 거래 성과
+            recent_trades = [t for t in self.trade_history if t.get('type') == 'SELL'][-10:]
+            if len(recent_trades) >= 3:
+                wins = sum(1 for t in recent_trades if t.get('profit', 0) > 0)
+                total_profit = sum(t.get('profit', 0) for t in recent_trades)
+                avg_profit_rate = sum(t.get('profit_rate', 0) for t in recent_trades) / len(recent_trades) * 100
+                win_rate = (wins / len(recent_trades)) * 100
+
+                msg += f"📊 <b>최근 성과</b> (최근 {len(recent_trades)}건)\n"
+                msg += f"  • 승률: {win_rate:.0f}% ({wins}승 {len(recent_trades)-wins}패)\n"
+                msg += f"  • 평균 수익률: {avg_profit_rate:+.2f}%\n"
+                msg += f"  • 누적 수익: {total_profit:+,.0f}원\n\n"
+
+            msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            msg += f"{'='*30}"
             
             self.telegram.send_message(msg)
             self.log("✅ 매도 완료")
@@ -483,13 +699,149 @@ class TradingBot:
             self.position_peak_profit = 0
             self.position_lowest_profit = 0
             
+            # 일일 손실 업데이트
+            self.update_daily_pnl(profit)
+
             return True
-            
+
         except Exception as e:
             self.log(f"❌ 매도 실패: {e}")
             self.telegram.send_message(f"❌ 매도 실패: {e}")
             return False
-    
+
+    def partial_sell(self, status, signals, ratio, reason):
+        """부분 매도 실행 (Tier 1 개선)"""
+        if not self.position:
+            return False
+
+        coin = status['coin']
+        if coin < 0.001:
+            return False
+
+        try:
+            price = signals['price']
+            buy_price = self.position['buy_price']
+            profit_rate = (price - buy_price) / buy_price * 100
+
+            # 매도할 수량 계산
+            sell_amount = coin * ratio
+
+            # 너무 적은 양은 거래하지 않음
+            if sell_amount < 0.001:
+                return False
+
+            # 드라이런 모드: 가상 거래
+            if self.dry_run:
+                sell_krw = sell_amount * price
+                self.virtual_coin -= sell_amount
+                self.virtual_krw += sell_krw
+            # 실제 주문
+            else:
+                self.upbit.order_market_sell(self.market, sell_amount)
+
+            sell_krw = sell_amount * price
+            profit = sell_krw - (self.position['buy_krw'] * ratio)
+
+            # 포지션 업데이트
+            self.position['sold_amount'] = self.position.get('sold_amount', 0) + sell_amount
+
+            mode_prefix = "🧪 [시뮬레이션] " if self.dry_run else ""
+            msg = f"{mode_prefix}📊 <b>부분 매도 ({ratio*100:.0f}%)</b>\n━━━━━━━━━━━━━━━━━\n\n"
+            msg += f"💰 금액: {sell_krw:,.0f}원\n"
+            msg += f"📊 가격: {price:,.0f}원\n"
+            msg += f"📈 매수가: {buy_price:,.0f}원\n\n"
+            msg += f"💵 <b>수익: {profit:+,.0f}원 ({profit_rate:+.2f}%)</b>\n\n"
+            msg += f"📝 사유: {reason}\n"
+            msg += f"💼 남은 포지션: {(1-ratio-self.position.get('sold_ratio', 0))*100:.0f}%\n"
+            msg += f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+
+            self.telegram.send_message(msg)
+            self.log(f"✅ 부분 매도 완료 ({ratio*100:.0f}%)")
+
+            # 판매 비율 누적
+            self.position['sold_ratio'] = self.position.get('sold_ratio', 0) + ratio
+
+            # 일일 손실 업데이트
+            self.update_daily_pnl(profit)
+
+            return True
+
+        except Exception as e:
+            self.log(f"❌ 부분 매도 실패: {e}")
+            return False
+
+    def update_daily_pnl(self, profit):
+        """일일 손익 업데이트 (Tier 1 개선)"""
+        # 날짜가 바뀌면 리셋
+        today = datetime.now().date()
+        if today != self.daily_pnl_reset_date:
+            self.daily_pnl = 0
+            self.daily_pnl_reset_date = today
+            self.trading_paused = False
+            self.consecutive_losses = 0
+            self.log("📅 일일 손익 리셋")
+
+        # 손익 업데이트
+        profit_rate = profit / 1000000  # 100만원 기준 손익률
+        self.daily_pnl += profit_rate
+
+        # 연속 손실 추적
+        if profit < 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
+
+        # 일일 손실 제한 체크
+        if self.daily_pnl <= self.max_daily_loss:
+            self.trading_paused = True
+            msg = f"⚠️ <b>일일 손실 제한 도달</b>\n\n"
+            msg += f"오늘 손익: {self.daily_pnl*100:.2f}%\n"
+            msg += f"제한: {self.max_daily_loss*100:.0f}%\n\n"
+            msg += f"내일까지 거래가 중단됩니다."
+            self.telegram.send_message(msg)
+            self.log(f"⚠️ 거래 중단: 일일 손실 {self.daily_pnl*100:.2f}%")
+
+    def get_adaptive_stop_loss(self):
+        """적응형 손절 레벨 계산 (Tier 2 개선)
+
+        변동성(ATR)에 따라 손절 레벨 동적 조정:
+        - 저변동성: 타이트한 손절 (-0.8%)
+        - 고변동성: 넓은 손절 (-1.5%)
+        """
+        if not self.adaptive_stop_loss:
+            return self.stop_loss
+
+        try:
+            # ATR 계산 (1시간봉 기준)
+            from advanced_features import VolatilityManager
+            candles = self.upbit.get_candles(self.market, "minutes", 60, 30)
+
+            if not candles or len(candles) < 14:
+                return self.stop_loss  # 데이터 부족 시 기본값
+
+            atr = VolatilityManager.calculate_atr(candles, period=14)
+            current_price = candles[0]['trade_price']
+            atr_percent = (atr / current_price) * 100
+
+            # 변동성 기반 손절 레벨 결정
+            if atr_percent < 2:
+                # 저변동성: 타이트한 손절
+                adaptive_stop = self.stop_loss_min
+            elif atr_percent > 4:
+                # 고변동성: 넓은 손절
+                adaptive_stop = self.stop_loss_max
+            else:
+                # 중간: 선형 보간
+                ratio = (atr_percent - 2) / (4 - 2)
+                adaptive_stop = self.stop_loss_min + (self.stop_loss_max - self.stop_loss_min) * ratio
+
+            self.log(f"🎯 적응형 손절: {adaptive_stop*100:.2f}% (ATR: {atr_percent:.2f}%)")
+            return adaptive_stop
+
+        except Exception as e:
+            self.log(f"적응형 손절 계산 실패: {e}")
+            return self.stop_loss
+
     def check_multi_coin_switch(self):
         """멀티 코인 모드: 더 나은 코인으로 전환 검토"""
         if not self.enable_multi_coin or not self.market_scanner:
@@ -537,14 +889,102 @@ class TradingBot:
             self.log(f"코인 전환 검토 실패: {e}")
             return False
 
-    def check_and_trade(self):
-        """메인 로직"""
+    def get_multi_timeframe_signals(self):
+        """다중 시간대 신호 분석 (Tier 2 개선)
+
+        1분/5분/15분을 모두 체크하여 신호 강도 판단
+        """
         try:
+            # 각 시간대별 신호 가져오기
+            signals_1m = self.get_signals(1)
+            signals_5m = self.get_signals(5)
+            signals_15m = self.get_signals(15)
+
+            if not all([signals_1m, signals_5m, signals_15m]):
+                return None
+
+            # 매수 신호 강도 계산
+            buy_signals = [
+                signals_1m['buy'],
+                signals_5m['buy'],
+                signals_15m['buy']
+            ]
+            buy_signal_count = sum(buy_signals)
+
+            # 매도 신호 강도 계산
+            sell_signals = [
+                signals_1m['sell'],
+                signals_5m['sell'],
+                signals_15m['sell']
+            ]
+            sell_signal_count = sum(sell_signals)
+
+            # 강한 신호: 2개 이상 동의
+            strong_buy = buy_signal_count >= 2
+            strong_sell = sell_signal_count >= 2
+
+            # 매우 강한 신호: 3개 모두 동의
+            very_strong_buy = buy_signal_count == 3
+            very_strong_sell = sell_signal_count == 3
+
+            # 15분봉을 기본으로 사용하되, 다중 시간대 정보 추가
+            base_signals = signals_15m.copy()
+            base_signals.update({
+                'multi_timeframe': {
+                    '1m': signals_1m,
+                    '5m': signals_5m,
+                    '15m': signals_15m
+                },
+                'buy_signal_count': buy_signal_count,
+                'sell_signal_count': sell_signal_count,
+                'strong_buy': strong_buy,
+                'strong_sell': strong_sell,
+                'very_strong_buy': very_strong_buy,
+                'very_strong_sell': very_strong_sell,
+                # 기존 buy/sell을 강한 신호로 대체
+                'buy': strong_buy,
+                'sell': strong_sell
+            })
+
+            return base_signals
+
+        except Exception as e:
+            self.log(f"다중 시간대 분석 실패: {e}")
+            # 실패 시 기본 15분봉으로 fallback
+            return self.get_signals(15)
+
+    def check_and_trade(self):
+        """메인 로직 (Tier 2+3 개선: 다중 시간대 + 시장 상태)"""
+        try:
+            # 일일 손실 제한 체크 (Tier 1 개선)
+            if self.trading_paused:
+                self.log(f"⏸️ 거래 중단: 일일 손실 {self.daily_pnl*100:.2f}%")
+                return
+
+            # Tier 3 개선: 시장 상태 감지
+            market_regime = None
+            if self.use_market_regime:
+                # 10분마다 시장 상태 체크
+                if not self.market_regime_detector.last_check_time or \
+                   (datetime.now() - self.market_regime_detector.last_check_time).total_seconds() > 600:
+                    market_regime = self.market_regime_detector.detect_market_regime()
+                    if market_regime:
+                        regime_emoji = {"bull": "🐂", "bear": "🐻", "sideways": "↔️"}
+                        self.log(f"{regime_emoji.get(market_regime['regime'])} 시장: {market_regime['regime'].upper()} "
+                                f"(신뢰도: {market_regime['strength']:.0f}%, BTC RSI: {market_regime['btc_rsi_1h']:.1f})")
+
+                # 약세장이 매우 강할 때 거래 중단
+                if not self.market_regime_detector.should_trade():
+                    self.log("⚠️ 강한 약세장 - 거래 대기")
+                    return
+
             # 멀티 코인 모드: 코인 전환 검토
             self.check_multi_coin_switch()
 
             status = self.get_current_status()
-            signals = self.get_signals(self.signal_timeframe)
+
+            # Tier 2 개선: 다중 시간대 신호 사용
+            signals = self.get_multi_timeframe_signals()
 
             if not signals:
                 self.log("신호 없음")
@@ -552,6 +992,11 @@ class TradingBot:
 
             self.log(f"\n[{datetime.now().strftime('%H:%M:%S')}] 체크 ({self.market.replace('KRW-', '')})")
             self.log(f"자산: {status['total']:,.0f}원 | RSI: {signals['rsi']:.1f}")
+
+            # Tier 2: 다중 시간대 신호 강도 로그
+            if 'buy_signal_count' in signals:
+                self.log(f"📊 매수신호: {signals['buy_signal_count']}/3 (1m/5m/15m)"
+                        f"{' 🔥' if signals.get('very_strong_buy') else ' ✅' if signals.get('strong_buy') else ''}")
 
             # 포지션 있음
             if self.position:
@@ -584,52 +1029,86 @@ class TradingBot:
                 quick_profit_adj = adjusted_params['quick_profit']
                 take_profit_1_adj = adjusted_params['take_profit_1']
 
-                # === 다층 익절 시스템 (시간대별 조절) ===
-                # 1. 퀵 익절 (30분 이내, 시간대별 조절)
-                if hold_minutes <= 30 and profit_rate >= quick_profit_adj:
-                    self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%, {session['name']})")
+                # Tier 2 개선: 적응형 손절 레벨 계산
+                adaptive_stop_loss = self.get_adaptive_stop_loss()
 
-                # 2. 최종 익절 (4%)
-                elif profit_rate >= self.take_profit_3:
-                    self.sell(status, signals, f"🎯 최종익절 ({profit_rate*100:.2f}%)")
+                # === 부분 익절 시스템 (Tier 1 + Tier 2 개선) ===
+                if self.enable_partial_sell:
+                    sold_ratio = self.position.get('sold_ratio', 0)
 
-                # 3. 2차 익절 (2.5%)
-                elif profit_rate >= self.take_profit_2:
-                    self.sell(status, signals, f"✅ 2차익절 ({profit_rate*100:.2f}%)")
+                    # Tier 2: 시간 기반 익절 완화 (30분 이후 임계값 낮춤)
+                    tp1_threshold = self.take_profit_1
+                    tp2_threshold = self.take_profit_2
+                    tp3_threshold = self.take_profit_3
 
-                # 4. 1차 익절 (시간대별 조절)
-                elif profit_rate >= take_profit_1_adj:
-                    self.sell(status, signals, f"✅ 1차익절 ({profit_rate*100:.2f}%, {session['name']})")
+                    if self.time_based_profit_relaxation and hold_minutes > self.relaxation_time_minutes:
+                        tp1_threshold -= self.profit_relaxation_amount  # 1.5% → 1.2%
+                        tp2_threshold -= self.profit_relaxation_amount  # 2.5% → 2.2%
+                        tp3_threshold -= self.profit_relaxation_amount  # 4.0% → 3.7%
+                        self.log(f"⏱️ 익절 완화: 30분 경과 (1차: {tp1_threshold*100:.1f}%, 2차: {tp2_threshold*100:.1f}%, 3차: {tp3_threshold*100:.1f}%)")
 
-                # === 손절 ===
-                elif profit_rate <= self.stop_loss:
-                    self.sell(status, signals, f"❌ 손절 ({profit_rate*100:.2f}%)")
+                    # 1. 퀵 익절 (30분 이내, 시간대별 조절) - 전체 매도
+                    if hold_minutes <= 30 and profit_rate >= quick_profit_adj:
+                        self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%, {session['name']})")
 
-                # === 동적 트레일링 스톱 ===
-                # 1.5% 이상 수익 시: -0.8% 트레일링
-                elif self.position_peak_profit >= 0.015 and profit_rate < self.position_peak_profit - self.trailing_stop_wide:
-                    self.sell(status, signals, f"📉 트레일링스톱-와이드 (최고 {self.position_peak_profit*100:.2f}%)")
+                    # 2. 1차 익절 (1.5% 또는 완화된 임계값) - 50% 부분 매도
+                    elif profit_rate >= tp1_threshold and sold_ratio < 0.5:
+                        self.partial_sell(status, signals, 0.50, f"✅ 1차익절 50% ({profit_rate*100:.2f}%)")
 
-                # 0.8% 이상 수익 시: -0.5% 트레일링
-                elif self.position_peak_profit >= 0.008 and profit_rate < self.position_peak_profit - self.trailing_stop_medium:
-                    self.sell(status, signals, f"📉 트레일링스톱-미디엄 (최고 {self.position_peak_profit*100:.2f}%)")
+                    # 3. 2차 익절 (2.5% 또는 완화된 임계값) - 추가 30% 부분 매도
+                    elif profit_rate >= tp2_threshold and sold_ratio < 0.8:
+                        remaining = 1.0 - sold_ratio
+                        ratio = 0.30 / (1.0 - 0.5) if sold_ratio >= 0.5 else 0.30
+                        self.partial_sell(status, signals, min(ratio, remaining), f"✅ 2차익절 30% ({profit_rate*100:.2f}%)")
 
-                # 0.3% 이상 수익 시: -0.3% 트레일링 (핵심 개선!)
-                elif self.position_peak_profit >= 0.003 and profit_rate < self.position_peak_profit - self.trailing_stop_tight:
-                    self.sell(status, signals, f"📉 트레일링스톱-타이트 (최고 {self.position_peak_profit*100:.2f}%)")
+                    # 4. 최종 익절 (4% 또는 완화된 임계값) - 남은 전부 매도
+                    elif profit_rate >= tp3_threshold:
+                        self.sell(status, signals, f"🎯 최종익절 ({profit_rate*100:.2f}%)")
 
-                # === 포지션 타임아웃 ===
-                # 3시간 이상 보유 + 손실 중이면 청산
-                elif hold_hours >= self.position_timeout_hours and profit_rate < 0:
-                    self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
+                # 기존 방식 (부분 익절 비활성화 시)
+                else:
+                    # 1. 퀵 익절 (30분 이내, 시간대별 조절)
+                    if hold_minutes <= 30 and profit_rate >= quick_profit_adj:
+                        self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%, {session['name']})")
+                    # 2. 최종 익절 (4%)
+                    elif profit_rate >= self.take_profit_3:
+                        self.sell(status, signals, f"🎯 최종익절 ({profit_rate*100:.2f}%)")
+                    # 3. 2차 익절 (2.5%)
+                    elif profit_rate >= self.take_profit_2:
+                        self.sell(status, signals, f"✅ 2차익절 ({profit_rate*100:.2f}%)")
+                    # 4. 1차 익절 (시간대별 조절)
+                    elif profit_rate >= take_profit_1_adj:
+                        self.sell(status, signals, f"✅ 1차익절 ({profit_rate*100:.2f}%, {session['name']})")
 
-                # 3시간 이상 보유 + 수익 미미하면 청산
-                elif hold_hours >= self.position_timeout_hours and profit_rate < 0.005:
-                    self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
+                    # === 손절 (Tier 2: 적응형) ===
+                    elif profit_rate <= adaptive_stop_loss:
+                        self.sell(status, signals, f"❌ 손절 ({profit_rate*100:.2f}%, 임계값: {adaptive_stop_loss*100:.2f}%)")
 
-                # === RSI 과열 신호 ===
-                elif signals['sell'] and profit_rate > 0:
-                    self.sell(status, signals, f"📊 RSI과열 ({profit_rate*100:.2f}%)")
+                    # === 동적 트레일링 스톱 ===
+                    # 1.5% 이상 수익 시: -0.8% 트레일링
+                    elif self.position_peak_profit >= 0.015 and profit_rate < self.position_peak_profit - self.trailing_stop_wide:
+                        self.sell(status, signals, f"📉 트레일링스톱-와이드 (최고 {self.position_peak_profit*100:.2f}%)")
+
+                    # 0.8% 이상 수익 시: -0.5% 트레일링
+                    elif self.position_peak_profit >= 0.008 and profit_rate < self.position_peak_profit - self.trailing_stop_medium:
+                        self.sell(status, signals, f"📉 트레일링스톱-미디엄 (최고 {self.position_peak_profit*100:.2f}%)")
+
+                    # 0.3% 이상 수익 시: -0.3% 트레일링 (핵심 개선!)
+                    elif self.position_peak_profit >= 0.003 and profit_rate < self.position_peak_profit - self.trailing_stop_tight:
+                        self.sell(status, signals, f"📉 트레일링스톱-타이트 (최고 {self.position_peak_profit*100:.2f}%)")
+
+                    # === 포지션 타임아웃 ===
+                    # 3시간 이상 보유 + 손실 중이면 청산
+                    elif hold_hours >= self.position_timeout_hours and profit_rate < 0:
+                        self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
+
+                    # 3시간 이상 보유 + 수익 미미하면 청산
+                    elif hold_hours >= self.position_timeout_hours and profit_rate < 0.005:
+                        self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
+
+                    # === RSI 과열 신호 ===
+                    elif signals['sell'] and profit_rate > 0:
+                        self.sell(status, signals, f"📊 RSI과열 ({profit_rate*100:.2f}%)")
             
             # 포지션 없음
             else:
@@ -951,19 +1430,66 @@ class TradingBot:
         """로그"""
         print(msg)
     
+    def update_check_interval(self):
+        """동적 스캔 빈도 업데이트 (Tier 1 개선)"""
+        # 5분마다 변동성 체크
+        now = datetime.now()
+        if self.last_atr_check and (now - self.last_atr_check).total_seconds() < 300:
+            return
+
+        self.last_atr_check = now
+
+        try:
+            # ATR 계산을 위한 데이터 가져오기
+            from advanced_features import VolatilityManager
+            candles = self.upbit.get_candles(self.market, 15, 30)  # 15분봉 30개
+            if not candles or len(candles) < 14:
+                return
+
+            atr = VolatilityManager.calculate_atr(candles, period=14)
+            if not atr:
+                return
+
+            current_price = candles[0]['trade_price']
+            atr_percent = (atr / current_price) * 100
+
+            # 변동성 기반 동적 간격
+            if atr_percent > 4:
+                self.current_check_interval = 120  # 2분 (고변동성)
+            elif atr_percent > 2:
+                self.current_check_interval = 180  # 3분 (중변동성)
+            else:
+                self.current_check_interval = 300  # 5분 (저변동성)
+
+            # 포지션 보유 중이면 더 자주 체크
+            if self.position:
+                self.current_check_interval = min(self.current_check_interval, 60)  # 최대 1분
+
+            self.log(f"⏱️ 스캔 간격 업데이트: {self.current_check_interval}초 (ATR: {atr_percent:.2f}%)")
+
+        except Exception as e:
+            self.log(f"스캔 간격 업데이트 실패: {e}")
+
     def run(self, interval=300):
-        """실행"""
+        """실행 (Tier 1 개선: 동적 스캔 빈도)"""
         self.initialize()
         self.send_help()
+        self.base_check_interval = interval
+        self.current_check_interval = interval
 
-        self.log(f"\n🤖 봇 시작 ({interval}초 체크)")
+        self.log(f"\n🤖 봇 시작 (기본 {interval}초 체크, 동적 조절 활성화)")
 
         try:
             while self.is_running:
+                # 동적 스캔 빈도 업데이트
+                self.update_check_interval()
+
                 self.check_and_trade()
                 self.check_daily_report()
                 self.check_telegram_commands()
-                time.sleep(interval)
+
+                # 동적으로 조절된 간격으로 대기
+                time.sleep(self.current_check_interval)
         except KeyboardInterrupt:
             self.log("\n봇 종료")
             self.telegram.send_message("⏹️ 봇 중지")
