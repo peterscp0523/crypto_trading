@@ -58,16 +58,27 @@ def get_trade_statistics(db):
         cursor.execute("SELECT MAX(timestamp) FROM trades")
         newest_trade = cursor.fetchone()[0]
 
-        # 월별 거래 수
-        cursor.execute("""
-            SELECT
-                EXTRACT(YEAR FROM timestamp) as year,
-                EXTRACT(MONTH FROM timestamp) as month,
-                COUNT(*) as count
-            FROM trades
-            GROUP BY EXTRACT(YEAR FROM timestamp), EXTRACT(MONTH FROM timestamp)
-            ORDER BY year DESC, month DESC
-        """)
+        # 월별 거래 수 (Oracle/SQLite 호환)
+        if db.use_oracle:
+            cursor.execute("""
+                SELECT
+                    EXTRACT(YEAR FROM timestamp) as year,
+                    EXTRACT(MONTH FROM timestamp) as month,
+                    COUNT(*) as count
+                FROM trades
+                GROUP BY EXTRACT(YEAR FROM timestamp), EXTRACT(MONTH FROM timestamp)
+                ORDER BY year DESC, month DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT
+                    CAST(strftime('%Y', timestamp) AS INTEGER) as year,
+                    CAST(strftime('%m', timestamp) AS INTEGER) as month,
+                    COUNT(*) as count
+                FROM trades
+                GROUP BY strftime('%Y', timestamp), strftime('%m', timestamp)
+                ORDER BY year DESC, month DESC
+            """)
         monthly_stats = cursor.fetchall()
 
         cursor.close()
@@ -97,11 +108,17 @@ def archive_old_trades(db, months_to_keep=6, dry_run=True):
 
         cursor = db.conn.cursor()
 
-        # 삭제 대상 조회
-        cursor.execute("""
-            SELECT COUNT(*) FROM trades
-            WHERE timestamp < :cutoff_date
-        """, cutoff_date=cutoff_date)
+        # 삭제 대상 조회 (Oracle/SQLite 호환)
+        if db.use_oracle:
+            cursor.execute("""
+                SELECT COUNT(*) FROM trades
+                WHERE timestamp < :cutoff_date
+            """, cutoff_date=cutoff_date)
+        else:
+            cursor.execute("""
+                SELECT COUNT(*) FROM trades
+                WHERE timestamp < ?
+            """, (cutoff_date,))
 
         count_to_delete = cursor.fetchone()[0]
 
@@ -117,11 +134,17 @@ def archive_old_trades(db, months_to_keep=6, dry_run=True):
             cursor.close()
             return count_to_delete
 
-        # 실제 삭제
-        cursor.execute("""
-            DELETE FROM trades
-            WHERE timestamp < :cutoff_date
-        """, cutoff_date=cutoff_date)
+        # 실제 삭제 (Oracle/SQLite 호환)
+        if db.use_oracle:
+            cursor.execute("""
+                DELETE FROM trades
+                WHERE timestamp < :cutoff_date
+            """, cutoff_date=cutoff_date)
+        else:
+            cursor.execute("""
+                DELETE FROM trades
+                WHERE timestamp < ?
+            """, (cutoff_date,))
 
         db.conn.commit()
         cursor.close()
