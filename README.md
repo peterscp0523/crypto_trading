@@ -1,5 +1,4 @@
 # 🤖 Crypto Trading Bot
-
 업비트(Upbit) 암호화폐 자동매매 봇 with 텔레그램 알림
 
 ## ✨ 주요 기능
@@ -117,3 +116,6 @@ MIT License
 ## 🤝 기여
 
 Issues와 Pull Requests를 환영합니다!
+
+---
+<!-- Auto-deployment test: 2024-12-27 -->
