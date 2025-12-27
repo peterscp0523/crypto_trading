@@ -105,3 +105,83 @@ class UpbitAPI:
         params = {"markets": markets_str}
         response = requests.get(url, params=params)
         return response.json()
+
+    def buy_limit(self, market, price, volume):
+        """지정가 매수"""
+        url = f"{self.server_url}/v1/orders"
+
+        query = {
+            'market': market,
+            'side': 'bid',
+            'volume': str(volume),
+            'price': str(price),
+            'ord_type': 'limit'
+        }
+
+        headers = self._get_headers(query)
+        try:
+            response = requests.post(url, json=query, headers=headers)
+            return response.json()
+        except Exception as e:
+            print(f"지정가 매수 실패: {e}")
+            return None
+
+    def sell_limit(self, market, price, volume):
+        """지정가 매도"""
+        url = f"{self.server_url}/v1/orders"
+
+        query = {
+            'market': market,
+            'side': 'ask',
+            'volume': str(volume),
+            'price': str(price),
+            'ord_type': 'limit'
+        }
+
+        headers = self._get_headers(query)
+        try:
+            response = requests.post(url, json=query, headers=headers)
+            return response.json()
+        except Exception as e:
+            print(f"지정가 매도 실패: {e}")
+            return None
+
+    def get_order(self, uuid):
+        """주문 상태 조회"""
+        url = f"{self.server_url}/v1/order"
+
+        query = {'uuid': uuid}
+        headers = self._get_headers(query)
+
+        try:
+            response = requests.get(url, params=query, headers=headers)
+            return response.json()
+        except Exception as e:
+            print(f"주문 조회 실패: {e}")
+            return None
+
+    def cancel_order(self, uuid):
+        """주문 취소"""
+        url = f"{self.server_url}/v1/order"
+
+        query = {'uuid': uuid}
+        headers = self._get_headers(query)
+
+        try:
+            response = requests.delete(url, params=query, headers=headers)
+            return response.json()
+        except Exception as e:
+            print(f"주문 취소 실패: {e}")
+            return None
+
+    def buy_market_order(self, market, krw_amount):
+        """시장가 매수 (wrapper)"""
+        return self.order_market_buy(market, krw_amount)
+
+    def sell_market_order(self, market, volume):
+        """시장가 매도 (wrapper)"""
+        return self.order_market_sell(market, volume)
+
+    def get_balances(self):
+        """잔고 조회 (wrapper)"""
+        return self.get_accounts()

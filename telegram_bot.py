@@ -9,6 +9,8 @@ from market_scanner import MarketScanner
 from advanced_features import VolatilityManager, TimeBasedStrategy, AdvancedRiskManager
 from database_manager import DatabaseManager
 from market_regime import MarketRegimeDetector  # Tier 3 개선
+from execution_manager import ExecutionManager  # Phase 1: 주문 실행 최적화
+from risk_manager import RiskManager  # Phase 1: VaR 리스크 관리
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -109,6 +111,12 @@ class TradingBot:
         # Tier 3 개선: 시장 상태 감지
         self.market_regime_detector = MarketRegimeDetector(upbit)
         self.use_market_regime = True  # 시장 상태 기반 조정 활성화
+
+        # Phase 1: 기관급 실행 및 리스크 관리
+        self.execution_manager = ExecutionManager(upbit)
+        self.risk_manager = RiskManager(upbit)
+        self.enable_limit_orders = True  # 지정가 주문 활성화
+        self.limit_order_strategy = 'mid'  # 'best', 'mid', 'aggressive'
 
         # 상태
         self.position = None
@@ -424,20 +432,58 @@ class TradingBot:
             if position_krw < 5000:
                 position_krw = min(krw, 5000)
 
+            # === Phase 1: 리스크 한도 체크 (VaR) ===
+            total_portfolio_krw = krw  # 전체 포트폴리오 가치
+            risk_check = self.risk_manager.check_risk_limits(position_krw, total_portfolio_krw, self.market)
+
+            if not risk_check.get('approved'):
+                self.log(f"⚠️ 리스크 한도 초과: {risk_check.get('reason')}")
+                return False
+
+            # === Phase 1: 슬리피지 추정 ===
+            slippage_data = None
+            execution_quality = ""
+            if self.enable_limit_orders:
+                slippage_data = self.execution_manager.estimate_slippage(self.market, 'buy', position_krw)
+                if slippage_data:
+                    execution_quality = f"\n📊 예상 슬리피지: {slippage_data['estimated_slippage']:.3f}%"
+                    execution_quality += f"\n💡 {slippage_data['recommendation']}"
+
             # 드라이런 모드: 가상 거래
             if self.dry_run:
                 amount = position_krw / price
                 self.virtual_coin = amount
                 self.virtual_krw = krw - position_krw
                 self.virtual_avg_price = price
+                executed_price = price
             # 실제 주문
             else:
-                result = self.upbit.order_market_buy(self.market, position_krw)
+                # Phase 1: 지정가 주문 시도 (슬리피지가 클 경우)
+                if self.enable_limit_orders and slippage_data and slippage_data['estimated_slippage'] > 0.10:
+                    # 슬리피지 > 0.1%면 지정가 사용
+                    order_result = self.execution_manager.execute_limit_order(
+                        self.market, 'buy', position_krw,
+                        price_strategy=self.limit_order_strategy,
+                        max_wait_seconds=20
+                    )
 
-            amount = position_krw / price
-            
+                    if order_result.get('success'):
+                        executed_price = order_result['price']
+                        amount = order_result['volume']
+                        execution_quality += f"\n✅ 지정가 체결 ({order_result.get('execution_time', 0):.1f}초)"
+                    else:
+                        # 지정가 실패시 시장가 폴백 (이미 내부 처리됨)
+                        executed_price = price
+                        amount = position_krw / price
+                else:
+                    # 시장가 주문
+                    result = self.upbit.order_market_buy(self.market, position_krw)
+                    executed_price = price
+                    amount = position_krw / price
+                    execution_quality += "\n📍 시장가 체결"
+
             self.position = {
-                'buy_price': price,
+                'buy_price': executed_price if not self.dry_run else price,
                 'buy_time': datetime.now(),
                 'amount': amount,
                 'buy_krw': krw
@@ -541,7 +587,7 @@ class TradingBot:
             msg += f"  • 🥇 최종: {price * (1 + self.take_profit_3):,.0f}원"
             msg += f" (+{self.take_profit_3*100:.0f}%) → 100% 매도\n\n"
 
-            # 리스크 관리
+            # 리스크 관리 (VaR 추가 - Phase 1)
             adaptive_sl = self.get_adaptive_stop_loss() if hasattr(self, 'get_adaptive_stop_loss') else self.stop_loss
             msg += f"🛡️ <b>리스크 관리</b>\n"
             msg += f"  • 손절: {price * (1 + adaptive_sl):,.0f}원"
@@ -555,7 +601,18 @@ class TradingBot:
             msg += f"    - 0.8% 도달 → -0.5% 트레일링\n"
             msg += f"    - 1.5% 도달 → -0.8% 트레일링\n"
             msg += f"  • 타임아웃: {self.position_timeout_hours}시간\n"
-            msg += f"  • 일일 손익: {self.daily_pnl*100:.2f}% (한도: {self.max_daily_loss*100:.0f}%)\n\n"
+            msg += f"  • 일일 손익: {self.daily_pnl*100:.2f}% (한도: {self.max_daily_loss*100:.0f}%)\n"
+
+            # Phase 1: VaR 정보
+            var_data = self.risk_manager.calculate_var(self.market, confidence_level=0.95)
+            if var_data:
+                msg += f"  • VaR(95%, 1일): -{var_data['var_1day']:.2f}% (최대 예상 손실)\n"
+                msg += f"  • 변동성: {var_data['volatility']:.2f}%\n"
+            msg += "\n"
+
+            # Phase 1: 실행 품질
+            if execution_quality:
+                msg += f"⚡ <b>실행 품질</b>{execution_quality}\n\n"
 
             # 거래 통계
             if len(self.trade_history) > 1:
