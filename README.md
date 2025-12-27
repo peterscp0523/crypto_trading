@@ -118,6 +118,29 @@ ORACLE_DB_PASSWORD=your_db_password
 ORACLE_DB_DSN=cryptodb_medium
 ```
 
+## 💾 Oracle Cloud 데이터베이스 설정 (Terraform)
+
+### 자동 설정 (권장)
+
+```bash
+cd terraform
+./setup.sh
+```
+
+자동으로:
+- ✅ Autonomous Database 생성 (Always Free)
+- ✅ Wallet 다운로드
+- ✅ 테이블 생성
+- ✅ GitHub Secrets 파일 생성
+
+자세한 내용: [terraform/README.md](terraform/README.md)
+
+### 수동 설정
+
+[ORACLE_DB_SETUP.md](ORACLE_DB_SETUP.md) 참고
+
+---
+
 ## 📱 텔레그램 명령어
 
 - `/status` - 현재 상태

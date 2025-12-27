@@ -1,0 +1,23 @@
+# Terraform 변수 설정 예시
+# 이 파일을 terraform.tfvars로 복사하여 실제 값을 입력하세요
+# cp terraform.tfvars.example terraform.tfvars
+
+# Oracle Cloud Region
+region = "ap-seoul-1"  # 서울 리전
+
+# Compartment OCID (루트 compartment 또는 특정 compartment)
+# OCI Console > Identity > Compartments에서 확인
+compartment_id = "ocid1.tenancy.oc1..aaaaaaaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Database 설정
+db_name         = "cryptodb"
+db_display_name = "crypto-trading-db"
+
+# Database 비밀번호 (최소 12자, 대소문자+숫자+특수문자 필수)
+db_admin_password  = "MySecureP@ssw0rd123!"
+db_wallet_password = "WalletP@ss123!"
+
+# Always Free Tier 설정
+is_free_tier               = true
+cpu_core_count             = 1     # Always Free: 1 OCPU
+data_storage_size_in_tbs   = 0.02  # Always Free: 20GB (0.02TB)
