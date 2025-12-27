@@ -48,10 +48,10 @@ jobs:
             # Wallet 디렉토리 준비 (Oracle DB 사용 시)
             mkdir -p /tmp/wallet
 
-            # Wallet 파일 디코딩 및 압축 해제 (선택적)
+            # Wallet 파일 디코딩 및 압축 해제 (Python 사용, unzip 불필요)
             if [ -n "${{ secrets.ORACLE_WALLET_BASE64 }}" ]; then
               echo "${{ secrets.ORACLE_WALLET_BASE64 }}" | base64 -d > /tmp/wallet.zip
-              unzip -o /tmp/wallet.zip -d /tmp/wallet
+              python3 -c 'import zipfile; zipfile.ZipFile("/tmp/wallet.zip").extractall("/tmp/wallet")'
               rm /tmp/wallet.zip
               echo "✅ Oracle Wallet 설정 완료"
             fi

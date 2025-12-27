@@ -1,0 +1,63 @@
+name: Database Maintenance
+
+on:
+  schedule:
+    - cron: '0 2 1 * *'  # 매월 1일 새벽 2시 (KST 11시)
+  workflow_dispatch:  # 수동 실행 가능
+    inputs:
+      dry_run:
+        description: 'Dry run mode (true/false)'
+        required: false
+        default: 'true'
+      months_to_keep:
+        description: 'Months to keep'
+        required: false
+        default: '6'
+
+jobs:
+  maintain-database:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install oracledb
+
+      - name: Run Database Maintenance
+        env:
+          ORACLE_DB_USER: ${{ secrets.ORACLE_DB_USER }}
+          ORACLE_DB_PASSWORD: ${{ secrets.ORACLE_DB_PASSWORD }}
+          ORACLE_DB_DSN: ${{ secrets.ORACLE_DB_DSN }}
+          ORACLE_WALLET_BASE64: ${{ secrets.ORACLE_WALLET_BASE64 }}
+          USE_ORACLE_DB: ${{ secrets.USE_ORACLE_DB }}
+          DB_ARCHIVE_MONTHS: ${{ github.event.inputs.months_to_keep || '6' }}
+        run: |
+          # Dry run vs 실제 실행
+          if [ "${{ github.event.inputs.dry_run }}" == "false" ]; then
+            python scripts/db_maintenance.py --apply
+          else
+            python scripts/db_maintenance.py
+          fi
+
+      - name: Send Telegram notification
+        if: always()
+        run: |
+          # 유지보수 결과 텔레그램 알림
+          if [ ${{ job.status }} == 'success' ]; then
+            MESSAGE="✅ <b>DB 유지보수 완료</b>%0A━━━━━━━━━━━━━━━━━%0A%0A📊 Oracle DB 정리 완료%0A🔧 오래된 데이터 아카이빙 성공"
+          else
+            MESSAGE="❌ <b>DB 유지보수 실패</b>%0A━━━━━━━━━━━━━━━━━%0A%0A⚠️ 유지보수 중 오류 발생%0A📋 GitHub Actions 로그 확인 필요"
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=HTML"
