@@ -58,8 +58,8 @@ class TradingBot:
         self.enable_multi_coin = enable_multi_coin  # 멀티 코인 모드
         self.db = db  # 데이터베이스 매니저 (선택적)
 
-        # 전략 파라미터 (다층 익절 시스템)
-        self.rsi_buy = 35            # 30 → 35 (더 많은 기회)
+        # 전략 파라미터 (다층 익절 시스템) - 실전 최적화
+        self.rsi_buy = 42            # 30 → 35 → 42 (실전 최적화: 더 자주 매수)
         self.rsi_sell = 70           # 70 유지
 
         # 다층 익절 전략 (빠른 수익 실현) - 기본값
@@ -341,47 +341,47 @@ class TradingBot:
         # 다중 시간대 추세 분석
         trend = self.get_trend_analysis()
 
-        # === 스마트 볼륨 필터 (Tier 1 개선) ===
-        # 시간대별 동적 임계값
+        # === 스마트 볼륨 필터 (실전 최적화) ===
+        # 시간대별 동적 임계값 (완화됨)
         if timeframe == 1:
-            base_vol_threshold = 1.5  # 1분봉: 급등 포착
+            base_vol_threshold = 1.2  # 1분봉: 1.5 → 1.2 (완화)
         elif timeframe == 5:
-            base_vol_threshold = 1.3  # 5분봉
+            base_vol_threshold = 1.0  # 5분봉: 1.3 → 1.0 (완화)
         elif timeframe == 15:
-            base_vol_threshold = 1.2  # 15분봉 (기본)
+            base_vol_threshold = 0.95  # 15분봉: 1.2 → 0.95 (완화, 평균 이하도 OK)
         else:
-            base_vol_threshold = 1.1  # 더 긴 시간대
+            base_vol_threshold = 0.9  # 더 긴 시간대: 1.1 → 0.9 (완화)
 
-        # 추세 강할 때 완화 (0.8배)
+        # 추세 강할 때 더욱 완화 (0.7배)
         if trend and trend['trend_state'] in ['strong_bull', 'correction']:
-            vol_threshold = base_vol_threshold * 0.8
+            vol_threshold = base_vol_threshold * 0.7  # 0.8 → 0.7 (더 완화)
         else:
             vol_threshold = base_vol_threshold
 
         # 거래량 조건 체크
         volume_ok = vol_ratio >= vol_threshold
 
-        # 매수 조건 (스마트 볼륨 필터 적용)
+        # 매수 조건 (실전 최적화: 균형잡힌 조건)
         buy_signal = False
         if trend and trend['buy_allowed']:
             rsi_threshold = trend['rsi_threshold']
 
-            # 추세별 조건 + 볼륨 필터
+            # 추세별 조건 (실전 최적화: 볼린저 완화, 강세장 거래량 무시)
             if trend['trend_state'] == 'strong_bull':
-                # 강한 상승: RSI + 볼륨
-                buy_signal = (rsi < rsi_threshold and volume_ok)
+                # 강한 상승: RSI만 (거래량 무시 - 상승장에서 거래량 적어도 OK)
+                buy_signal = (rsi < rsi_threshold)
             elif trend['trend_state'] == 'correction':
-                # 조정: RSI + 볼린저 완화 + 볼륨
-                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.05 and volume_ok)
+                # 조정: RSI + 볼린저 대폭 완화 (1.05 → 1.20)
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.20)
             elif trend['trend_state'] == 'weak_bounce':
-                # 약한 반등: RSI + 볼린저 + 볼륨
-                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.03 and volume_ok)
+                # 약한 반등: RSI + 볼린저 완화 (1.03 → 1.15) + 볼륨
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.15 and volume_ok)
             elif trend['trend_state'] == 'strong_bear':
-                # 강한 하락: 과매도 + 볼린저 하단 + 볼륨
-                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.02 and volume_ok)
+                # 강한 하락: 과매도 + 볼린저 완화 (1.02 → 1.10) + 볼륨
+                buy_signal = (rsi < rsi_threshold and current_price <= lower * 1.10 and volume_ok)
         else:
-            # 추세 분석 실패: 극도의 과매도 + 볼륨
-            buy_signal = (rsi < 25 and current_price <= lower * 1.01 and volume_ok)
+            # 추세 분석 실패: 과매도 완화 (25 → 35) + 볼린저 완화 (1.01 → 1.10)
+            buy_signal = (rsi < 35 and current_price <= lower * 1.10)
 
         signals = {
             'price': current_price,
