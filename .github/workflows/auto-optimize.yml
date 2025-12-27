@@ -1,0 +1,86 @@
+name: Auto-Optimize Trading Bot
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 매일 새벽 3시 (KST 12시)
+  workflow_dispatch:  # 수동 실행 가능
+
+env:
+  DOCKER_IMAGE: crypto-trading-bot
+  DOCKER_TAG: latest
+
+jobs:
+  analyze-and-optimize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests oracledb numpy anthropic
+
+      - name: Analyze Trading Performance
+        id: analyze
+        env:
+          ORACLE_DB_USER: ${{ secrets.ORACLE_DB_USER }}
+          ORACLE_DB_PASSWORD: ${{ secrets.ORACLE_DB_PASSWORD }}
+          ORACLE_DB_DSN: ${{ secrets.ORACLE_DB_DSN }}
+          ORACLE_WALLET_BASE64: ${{ secrets.ORACLE_WALLET_BASE64 }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python scripts/auto_optimizer.py
+
+      - name: Check if optimization needed
+        id: check
+        run: |
+          if [ -f "optimization_needed.flag" ]; then
+            echo "needs_optimization=true" >> $GITHUB_OUTPUT
+            cat optimization_report.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "needs_optimization=false" >> $GITHUB_OUTPUT
+            echo "✅ 성과 양호 - 최적화 불필요" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create Pull Request with Optimization
+        if: steps.check.outputs.needs_optimization == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            🤖 자동 최적화: 성과 개선
+
+            $(cat optimization_report.md)
+          branch: auto-optimize-${{ github.run_number }}
+          title: '🤖 자동 최적화: 거래 성과 개선'
+          body-path: optimization_report.md
+          labels: |
+            auto-optimization
+            bot
+
+      - name: Auto-merge if win rate critically low
+        if: steps.check.outputs.needs_optimization == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 승률이 40% 미만이면 자동 머지 (긴급 상황)
+          if [ -f "critical_optimization.flag" ]; then
+            gh pr merge --auto --squash --delete-branch
+            echo "⚠️ 긴급 최적화 자동 적용됨" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "📋 PR 생성됨 - 수동 리뷰 필요" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Send Telegram notification
+        if: always()
+        run: |
+          python scripts/send_telegram_notification.py \
+            "${{ steps.check.outputs.needs_optimization }}" \
+            "${{ secrets.TELEGRAM_TOKEN }}" \
+            "${{ secrets.TELEGRAM_CHAT_ID }}"
