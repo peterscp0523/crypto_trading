@@ -1193,7 +1193,11 @@ class TradingBot:
                         signals = self.get_multi_timeframe_signals()
                         if not signals:
                             self.log("⚠️ 기술적 신호 없지만 MA 크로스오버 매수")
-                            signals = {'price': status['current_price']}
+                            signals = {
+                                'price': status['current_price'],
+                                'rsi': 50,  # 중립값
+                                'buy_signal_count': 1
+                            }
 
                         self.buy(status, signals)
                         if self.position:
@@ -1236,7 +1240,11 @@ class TradingBot:
                         if not signals:
                             # signals가 없어도 스캘핑은 실행
                             self.log("⚠️ 기술적 신호 없지만 스캘핑 강제 매수")
-                            signals = {'price': status['current_price']}
+                            signals = {
+                                'price': status['current_price'],
+                                'rsi': 50,  # 중립값
+                                'buy_signal_count': 1
+                            }
 
                         self.buy(status, signals)
                         if self.position:
