@@ -40,13 +40,28 @@ class DatabaseManager:
                     with zipfile.ZipFile(wallet_path, 'r') as zip_ref:
                         zip_ref.extractall(wallet_dir)
 
+                    # sqlnet.ora 파일 수정 (WALLET_LOCATION을 실제 경로로 변경)
+                    sqlnet_path = f'{wallet_dir}/sqlnet.ora'
+                    with open(sqlnet_path, 'w') as f:
+                        f.write(f'WALLET_LOCATION = (SOURCE = (METHOD = file) (METHOD_DATA = (DIRECTORY="{wallet_dir}")))\n')
+                        f.write('SSL_SERVER_DN_MATCH=yes\n')
+
+                    # TNS_ADMIN 환경변수 설정 (wallet 위치)
+                    os.environ['TNS_ADMIN'] = wallet_dir
+
+                    # DSN은 tnsnames.ora의 별칭 사용 (기본값: cryptodb_tpurgent)
+                    dsn = os.environ.get('ORACLE_DB_DSN', 'cryptodb_tpurgent')
+
+                    # wallet_password 설정 (cwallet.sso 자동 로드)
+                    wallet_password = os.environ.get('ORACLE_WALLET_PASSWORD')
+                    if wallet_password:
+                        os.environ['ORACLE_WALLET_PASSWORD'] = wallet_password
+
+                    # 간단한 연결 (TNS_ADMIN 환경변수로 wallet 자동 탐지)
                     self.conn = oracledb.connect(
                         user=os.environ.get('ORACLE_DB_USER', 'ADMIN'),
                         password=os.environ.get('ORACLE_DB_PASSWORD'),
-                        dsn=os.environ.get('ORACLE_DB_DSN'),
-                        config_dir=wallet_dir,
-                        wallet_location=wallet_dir,
-                        wallet_password=os.environ.get('ORACLE_WALLET_PASSWORD')  # Wallet 비밀번호
+                        dsn=dsn
                     )
                 else:
                     # Wallet 없이 연결 (로컬 테스트용)
