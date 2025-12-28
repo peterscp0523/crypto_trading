@@ -33,13 +33,39 @@ class UpbitAPI:
         headers = self._get_headers()
         response = requests.get(url, headers=headers)
         return response.json()
-    
+
+    def get_market_all(self):
+        """전체 마켓 목록 조회"""
+        url = f"{self.server_url}/v1/market/all"
+        response = requests.get(url)
+        return response.json()
+
     def get_current_price(self, market="KRW-ETH"):
         url = f"{self.server_url}/v1/ticker"
         params = {"markets": market}
         response = requests.get(url, params=params)
         return response.json()[0]
-    
+
+    def get_ticker(self, markets):
+        """여러 마켓의 현재가 정보 조회
+
+        Args:
+            markets: 마켓 리스트 또는 단일 마켓
+
+        Returns:
+            ticker 정보 리스트
+        """
+        url = f"{self.server_url}/v1/ticker"
+
+        if isinstance(markets, list):
+            markets_str = ','.join(markets)
+        else:
+            markets_str = markets
+
+        params = {"markets": markets_str}
+        response = requests.get(url, params=params)
+        return response.json()
+
     def get_orderbook(self, market="KRW-ETH"):
         url = f"{self.server_url}/v1/orderbook"
         params = {"markets": market}

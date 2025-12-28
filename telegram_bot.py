@@ -13,6 +13,7 @@ from execution_manager import ExecutionManager  # Phase 1: 주문 실행 최적�
 from risk_manager import RiskManager  # Phase 1: VaR 리스크 관리
 from volatility_strategy import VolatilityScalpingStrategy  # 변동성 스캘핑
 from ma_crossover_strategy import MACrossoverStrategy  # MA 크로스오버
+from coin_selector import CoinSelector  # 거래량 기반 코인 선택
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -64,39 +65,39 @@ class TradingBot:
         self.rsi_buy = 42            # 30 → 35 → 42 (실전 최적화: 더 자주 매수)
         self.rsi_sell = 70           # 70 유지
 
-        # 다층 익절 전략 (빠른 수익 실현) - 기본값
-        self.quick_profit = 0.008    # 0.8% 퀵 익절 (30분 이내)
-        self.take_profit_1 = 0.015   # 1.5% 1차 익절
-        self.take_profit_2 = 0.025   # 2.5% 2차 익절
-        self.take_profit_3 = 0.04    # 4.0% 최종 익절
+        # 다층 익절 전략 (현실적 조정) - 긴급 개선
+        self.quick_profit = 0.0020   # 0.2% 퀵 익절 (5분 이내, 수수료 4배)
+        self.take_profit_1 = 0.0035  # 0.35% 1차 익절 (수수료 7배)
+        self.take_profit_2 = 0.0050  # 0.50% 2차 익절 (수수료 10배)
+        self.take_profit_3 = 0.0080  # 0.80% 최종 익절
 
-        self.stop_loss = -0.015      # -2% → -1.5% (더 빠른 손절, 기본값)
+        self.stop_loss = -0.0025     # -0.25% 손절 (매우 타이트)
 
         # Tier 2 개선: 적응형 손절 (변동성 기반)
         self.adaptive_stop_loss = True  # 적응형 손절 활성화
-        self.stop_loss_min = -0.008     # 최소 손절: -0.8% (저변동성)
-        self.stop_loss_max = -0.015     # 최대 손절: -1.5% (고변동성)
+        self.stop_loss_min = -0.0020    # 최소 손절: -0.2% (저변동성)
+        self.stop_loss_max = -0.0035    # 최대 손절: -0.35% (고변동성)
 
         # Tier 2 개선: 시간 기반 익절 완화
         self.time_based_profit_relaxation = True  # 시간 기반 익절 완화 활성화
-        self.relaxation_time_minutes = 30         # 30분 이후 완화
-        self.profit_relaxation_amount = 0.003     # -0.3%p 완화
+        self.relaxation_time_minutes = 10         # 10분 이후 완화 (30→10)
+        self.profit_relaxation_amount = 0.001     # -0.1%p 완화 (0.3→0.1)
 
-        # 부분 익절 전략 (Tier 1 개선)
+        # 부분 익절 전략 (Tier 1 개선) - 현실적 조정
         self.enable_partial_sell = True  # 부분 익절 활성화
         self.partial_sell_ratios = [
-            (0.015, 0.50),  # 1.5% 도달 시 50% 매도
-            (0.025, 0.30),  # 2.5% 도달 시 30% 매도 (남은 것의)
-            (0.040, 0.20),  # 4.0% 도달 시 20% 매도 (남은 것의)
+            (0.0025, 0.50),  # 0.25% 도달 시 50% 매도
+            (0.0045, 0.30),  # 0.45% 도달 시 30% 매도
+            (0.0070, 0.20),  # 0.70% 도달 시 20% 매도
         ]
 
-        # 동적 트레일링 스톱
-        self.trailing_stop_tight = 0.003   # 0.3% 수익 이후 -0.3% 트레일링
-        self.trailing_stop_medium = 0.005  # 0.8% 수익 이후 -0.5% 트레일링
-        self.trailing_stop_wide = 0.008    # 1.5% 수익 이후 -0.8% 트레일링
+        # 동적 트레일링 스톱 - 현실적 조정
+        self.trailing_stop_tight = 0.0015  # 0.15% 수익 이후 -0.15% 트레일링
+        self.trailing_stop_medium = 0.0025 # 0.25% 수익 이후 -0.25% 트레일링
+        self.trailing_stop_wide = 0.0040   # 0.40% 수익 이후 -0.40% 트레일링
 
         # 포지션 타임아웃
-        self.position_timeout_hours = 3    # 3시간 이후 강제 청산 검토
+        self.position_timeout_hours = 0.5  # 30분 이후 강제 청산 검토 (3시간→30분)
 
         self.bb_period = 20
         self.bb_std = 2
@@ -105,10 +106,13 @@ class TradingBot:
         # DB에서 최적 파라미터 로드
         self.load_optimized_parameters()
 
-        # 멀티 코인 설정
+        # 멀티 코인 설정 (개선: 거래량 기반 선택)
         self.market_scanner = MarketScanner(upbit) if enable_multi_coin else None
+        self.coin_selector = CoinSelector(upbit)  # 거래량 × 변동성 기반 코인 선택
         self.coin_switch_score_diff = 20  # 코인 전환 최소 점수 차이
         self.last_coin_scan = None
+        self.selected_coins = []  # 선택된 코인 리스트
+        self.last_coin_selection = None  # 마지막 코인 선택 시간
 
         # Tier 3 개선: 시장 상태 감지
         self.market_regime_detector = MarketRegimeDetector(upbit)
@@ -134,9 +138,9 @@ class TradingBot:
         self.position_peaks = {}  # {market: peak_profit}
         self.position_lows = {}  # {market: lowest_profit}
 
-        # 멀티 코인 설정
-        self.max_positions = 3  # 최대 3개 코인 동시 보유
-        self.position_size_per_coin = 0.3  # 코인당 30%
+        # 멀티 코인 설정 - 현실적 조정
+        self.max_positions = 1  # 최대 1개 코인만 (집중 투자)
+        self.position_size_per_coin = 0.9  # 코인당 90% (10% 버퍼)
 
         # 레거시 호환 (기존 코드용)
         self.position = None  # 메인 코인 포지션 (하위 호환)
@@ -527,6 +531,13 @@ class TradingBot:
                 self.log(f"⚠️ 리스크 한도 초과: {risk_check.get('reason')}")
                 return False
 
+            # === 잔고 확인 (실제 보유 KRW vs 필요 금액) ===
+            available_krw = status['krw']
+            if position_krw > available_krw:
+                self.log(f"⏸️ 매수 스킵: 필요 {position_krw:,.0f}원 > 보유 {available_krw:,.0f}원 (부족: {position_krw - available_krw:,.0f}원)")
+                # 다른 포지션이 매도될 때까지 대기 (스팸 방지)
+                return False
+
             # === Phase 1: 슬리피지 추정 ===
             slippage_data = None
             execution_quality = ""
@@ -585,9 +596,30 @@ class TradingBot:
                             self.log(f"❌ 폴백 시장가 실패: UUID 없음, 응답={result}")
                             return False
 
-                        self.log(f"⚠️ 지정가 실패, 시장가로 체결: UUID={result.get('uuid')}")
-                        executed_price = price
-                        amount = position_krw / price
+                        uuid = result.get('uuid')
+                        self.log(f"⚠️ 지정가 실패, 시장가로 체결: UUID={uuid}")
+
+                        # 실제 체결 정보 조회
+                        import time
+                        time.sleep(0.5)
+                        order_info = self.upbit.get_order(uuid)
+
+                        if order_info and float(order_info.get('executed_volume', 0)) > 0:
+                            trades = order_info.get('trades', [])
+                            if trades:
+                                total_funds = sum(float(t['funds']) for t in trades)
+                                total_volume = sum(float(t['volume']) for t in trades)
+                                executed_price = total_funds / total_volume if total_volume > 0 else price
+                                amount = total_volume
+                            else:
+                                executed_price = float(order_info.get('avg_price') or price)
+                                amount = float(order_info.get('executed_volume', 0))
+                            self.log(f"✅ 폴백 체결: 평균가={executed_price:,.0f}원, 수량={amount:.8f}")
+                        else:
+                            self.log(f"⚠️ 폴백 체결 정보 조회 실패, 예상값 사용")
+                            executed_price = price
+                            amount = position_krw / price
+
                         execution_quality += "\n⚠️ 지정가→시장가 폴백"
                 else:
                     # 시장가 주문
@@ -619,11 +651,38 @@ class TradingBot:
                         return False
 
                     # 주문 정보 로깅
-                    self.log(f"✅ 시장가 주문 생성: UUID={result.get('uuid')}, "
-                            f"시도금액={position_krw:,.0f}원")
+                    uuid = result.get('uuid')
+                    self.log(f"✅ 시장가 주문 생성: UUID={uuid}, 시도금액={position_krw:,.0f}원")
 
-                    executed_price = price
-                    amount = position_krw / price
+                    # 실제 체결 정보 조회 (중요!)
+                    import time
+                    time.sleep(0.5)  # 체결 대기
+                    order_info = self.upbit.get_order(uuid)
+
+                    self.log(f"🔍 주문 조회: state={order_info.get('state') if order_info else 'None'}, "
+                            f"executed_vol={order_info.get('executed_volume') if order_info else 'None'}")
+
+                    # 체결 정보 추출 (state가 done 또는 cancel이어도 체결되었으면 OK)
+                    if order_info and float(order_info.get('executed_volume', 0)) > 0:
+                        # trades 배열에서 실제 체결가 계산
+                        trades = order_info.get('trades', [])
+                        if trades:
+                            total_funds = sum(float(t['funds']) for t in trades)
+                            total_volume = sum(float(t['volume']) for t in trades)
+                            executed_price = total_funds / total_volume if total_volume > 0 else price
+                            amount = total_volume
+                        else:
+                            # avg_price가 있으면 사용
+                            executed_price = float(order_info.get('avg_price') or price)
+                            amount = float(order_info.get('executed_volume', 0))
+
+                        self.log(f"✅ 체결 완료: 평균가={executed_price:,.0f}원, 수량={amount:.8f}")
+                    else:
+                        # 조회 실패 시 예상값 사용
+                        self.log(f"⚠️ 체결 정보 조회 실패, 예상값 사용 (state={order_info.get('state') if order_info else 'None'})")
+                        executed_price = price
+                        amount = position_krw / price
+
                     execution_quality += "\n📍 시장가 체결"
 
             # 멀티 코인: 포지션 딕셔너리에 추가
@@ -632,7 +691,7 @@ class TradingBot:
                 'buy_price': executed_price if not self.dry_run else price,
                 'buy_time': datetime.now(),
                 'amount': amount,
-                'buy_krw': krw
+                'buy_krw': position_krw  # 실제 매수 금액 (전체 잔액 아님!)
             }
             self.add_position(target_market, position_data)
             
@@ -1319,9 +1378,21 @@ class TradingBot:
                 self.check_and_trade_single_coin(market)
 
             # 2. 새로운 매수 기회 찾기 (포지션이 꽉 차지 않았을 때)
-            if self.can_add_position() and self.enable_multi_coin and self.market_scanner:
-                # TOP 코인들 스캔
-                markets_to_scan = ['KRW-BTC', 'KRW-ETH', 'KRW-XRP', 'KRW-SOL', 'KRW-DOGE']
+            if self.can_add_position() and self.enable_multi_coin:
+                # 거래량 × 변동성 기반 최적 코인 선택 (10분마다 갱신)
+                now = datetime.now()
+                if not self.last_coin_selection or (now - self.last_coin_selection).total_seconds() > 600:
+                    self.log("🔄 최적 코인 재선택 중...")
+                    self.selected_coins = self.coin_selector.get_best_coins_for_scalping(
+                        min_volume_krw=30_000_000_000,  # 300억 이상 (유동성 확보)
+                        top_n=8  # 상위 8개 스캔
+                    )
+                    self.last_coin_selection = now
+
+                # 선택된 코인들 스캔
+                markets_to_scan = [c['market'] for c in self.selected_coins] if self.selected_coins else [
+                    'KRW-DOGE', 'KRW-XRP', 'KRW-SHIB', 'KRW-PEPE', 'KRW-SOL'  # 알트코인 우선 폴백
+                ]
 
                 best_opportunity = None
                 best_score = 0

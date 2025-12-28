@@ -144,8 +144,8 @@ class VolatilityScalpingStrategy:
                         'action': 'buy',
                         'reason': '급락 후 반등 진입',
                         'confidence': 0.7 if volatility['is_high'] else 0.6,
-                        'target_profit': 1.2,  # 1.2% 목표
-                        'stop_loss': -0.8  # -0.8% 손절
+                        'target_profit': 2.0,  # 2.0% 목표 (수수료 20배)
+                        'stop_loss': -1.0  # -1.0% 손절
                     }
 
                 # 조건 2: 상승 모멘텀 추세추종
@@ -155,8 +155,8 @@ class VolatilityScalpingStrategy:
                         'action': 'buy',
                         'reason': '상승 모멘텀 추세추종',
                         'confidence': 0.75,
-                        'target_profit': 1.5,  # 1.5% 목표
-                        'stop_loss': -0.8  # -0.8% 손절
+                        'target_profit': 2.5,  # 2.5% 목표 (수수료 25배)
+                        'stop_loss': -1.0  # -1.0% 손절
                     }
 
                 # 조건 3: 단순 변동성 매수 (가장 공격적)
@@ -167,8 +167,8 @@ class VolatilityScalpingStrategy:
                         'action': 'buy',
                         'reason': '양봉 변동성 매수',
                         'confidence': 0.65,
-                        'target_profit': 1.0,  # 1.0% 목표
-                        'stop_loss': -0.7  # -0.7% 손절
+                        'target_profit': 1.5,  # 1.5% 목표 (수수료 15배)
+                        'stop_loss': -0.8  # -0.8% 손절
                     }
 
                 # 조건 4: 반대 방향 전환 포착
@@ -179,8 +179,8 @@ class VolatilityScalpingStrategy:
                         'action': 'buy',
                         'reason': '하락 중 반등 포착',
                         'confidence': 0.7,
-                        'target_profit': 1.3,  # 1.3% 목표
-                        'stop_loss': -0.8  # -0.8% 손절
+                        'target_profit': 2.2,  # 2.2% 목표 (수수료 22배)
+                        'stop_loss': -1.0  # -1.0% 손절
                     }
 
             # === 매도 기회 (포지션 있을 때) ===

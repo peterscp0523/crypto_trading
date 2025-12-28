@@ -122,8 +122,8 @@ class MACrossoverStrategy:
                         'confidence': confidence,
                         'fast_ma': fast_ma,
                         'slow_ma': slow_ma,
-                        'target_profit': 2.0,  # 2% 목표
-                        'stop_loss': -1.0  # -1% 손절
+                        'target_profit': 3.0,  # 3% 목표 (수수료 30배, 중기 추세)
+                        'stop_loss': -1.2  # -1.2% 손절
                     }
 
             # === 데드 크로스 (매도) ===
