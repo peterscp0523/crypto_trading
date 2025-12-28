@@ -1467,6 +1467,14 @@ class TradingBot:
             target_profit = position.get('target_profit', self.take_profit_1)
             stop_loss = position.get('stop_loss', self.stop_loss)
 
+            # 빠른 익절: 10분 이상 보유 + 플러스 수익이면 일단 매도
+            if hold_hours >= 0.17 and profit_rate > 0.002:  # 10분, 0.2% 이상
+                reason = f"빠른 익절 (10분 보유, {profit_rate*100:.2f}%)"
+                self.log(f"⚡ {target_market} {reason}")
+                signals = {'price': current_price}
+                self.sell(None, signals, reason, market=target_market)
+                return
+
             if profit_rate >= target_profit:
                 reason = f"목표 수익 달성 ({profit_rate*100:.2f}% >= {target_profit*100:.2f}%)"
                 self.log(f"💰 {target_market} {reason}")
