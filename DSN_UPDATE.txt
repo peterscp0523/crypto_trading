@@ -1,0 +1,24 @@
+🔧 ORACLE_DB_DSN Secret 업데이트 필요
+
+현재 DSN이 잘못된 리전을 가리키고 있습니다.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ 올바른 DSN 값:
+
+(description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.ap-chuncheon-1.oraclecloud.com))(connect_data=(service_name=g32903972cf397b_cryptodb_high.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+업데이트 방법:
+1. https://github.com/peterscp0523/crypto_trading/settings/secrets/actions
+2. ORACLE_DB_DSN → Update
+3. 위 DSN 값 복사 붙여넣기
+4. Update secret
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+주요 변경사항:
+- 리전: ap-seoul-1 → ap-chuncheon-1
+- 포트: 1521 → 1522
+- Service: cryptodb_high 사용 (고성능)

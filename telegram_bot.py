@@ -129,8 +129,18 @@ class TradingBot:
         self.scalping_strategy = VolatilityScalpingStrategy()
         self.enable_scalping = True
 
-        # 상태
-        self.position = None
+        # 상태 (멀티 코인 지원)
+        self.positions = {}  # {market: {buy_price, buy_time, amount, ...}}
+        self.position_peaks = {}  # {market: peak_profit}
+        self.position_lows = {}  # {market: lowest_profit}
+
+        # 멀티 코인 설정
+        self.max_positions = 3  # 최대 3개 코인 동시 보유
+        self.position_size_per_coin = 0.3  # 코인당 30%
+
+        # 레거시 호환 (기존 코드용)
+        self.position = None  # 메인 코인 포지션 (하위 호환)
+
         self.trade_history = []
         self.is_running = True
         self.error_count = 0
@@ -412,9 +422,78 @@ class TradingBot:
         self.signal_cache[cache_key] = (now, signals)
 
         return signals
-    
-    def buy(self, status, signals):
-        """매수 실행 (고급 기능 통합)"""
+
+    # === 멀티 코인 포지션 관리 헬퍼 함수 ===
+
+    def can_add_position(self):
+        """새로운 포지션 추가 가능 여부"""
+        return len(self.positions) < self.max_positions
+
+    def get_available_position_size(self, status):
+        """새 포지션에 사용 가능한 금액 (총 자산의 30%)"""
+        total_asset = status['total']
+        return int(total_asset * self.position_size_per_coin)
+
+    def add_position(self, market, position_data):
+        """포지션 추가"""
+        self.positions[market] = position_data
+        self.position_peaks[market] = 0
+        self.position_lows[market] = 0
+
+        # 레거시 호환: 첫 포지션은 self.position에도 저장
+        if len(self.positions) == 1:
+            self.position = position_data
+
+    def remove_position(self, market):
+        """포지션 제거"""
+        if market in self.positions:
+            del self.positions[market]
+            if market in self.position_peaks:
+                del self.position_peaks[market]
+            if market in self.position_lows:
+                del self.position_lows[market]
+
+            # 레거시 호환: 포지션이 하나도 없으면 self.position = None
+            if len(self.positions) == 0:
+                self.position = None
+            # 다른 포지션이 있으면 첫 번째 포지션을 self.position으로 설정
+            elif self.position and self.position.get('market') == market:
+                self.position = list(self.positions.values())[0] if self.positions else None
+
+    def get_position_for_market(self, market):
+        """특정 마켓의 포지션 조회"""
+        return self.positions.get(market)
+
+    def has_position_for_market(self, market):
+        """특정 마켓의 포지션 보유 여부"""
+        return market in self.positions
+
+    def get_total_position_value(self, status):
+        """전체 포지션 평가액"""
+        total = 0
+        for market, pos in self.positions.items():
+            # 현재가 조회
+            ticker = self.upbit.get_ticker(market)
+            if ticker:
+                current_price = ticker['trade_price']
+                total += pos['amount'] * current_price
+        return total
+
+    def buy(self, status, signals, market=None):
+        """매수 실행 (멀티 코인 지원)"""
+        # 멀티 코인: market 파라미터 사용, 없으면 self.market 사용
+        target_market = market or self.market
+
+        # 이미 해당 코인 보유 중이면 스킵
+        if self.has_position_for_market(target_market):
+            self.log(f"⚠️ {target_market} 이미 보유 중")
+            return False
+
+        # 최대 포지션 개수 체크
+        if not self.can_add_position():
+            self.log(f"⚠️ 최대 포지션 개수 도달 ({len(self.positions)}/{self.max_positions})")
+            return False
+
         krw = status['krw']
         if krw < 5000:
             return False
@@ -426,16 +505,9 @@ class TradingBot:
             session = TimeBasedStrategy.get_trading_session()
             self.log(f"⏰ {session['name']} (공격성: {session['aggression']}, 변동성: {session['volatility']})")
 
-            # === 포지션 사이징 (스캘핑용 고정 비율) ===
-            # 스캘핑: 빠른 회전을 위해 70% 고정
-            position_ratio = 0.7
-
-            # 거래 기록 기반 포지션 비율 조정
-            if len(self.trade_history) >= 10:
-                optimal_ratio = AdvancedRiskManager.get_optimal_position_ratio(self.trade_history)
-                position_ratio = min(optimal_ratio, 0.8)  # 최대 80%
-
-            position_krw = int(krw * position_ratio)
+            # === 포지션 사이징 (멀티 코인용) ===
+            # 멀티 코인: 총 자산의 30%씩 배분
+            position_krw = self.get_available_position_size(status)
 
             # 최소 금액 체크
             if position_krw < 5000:
@@ -449,7 +521,7 @@ class TradingBot:
             self.log(f"🔍 리스크 체크: 매수금액={position_krw:,.0f}원, 전체자산={total_portfolio_krw:,.0f}원, "
                     f"비율={position_krw/total_portfolio_krw*100:.1f}%")
 
-            risk_check = self.risk_manager.check_risk_limits(position_krw, total_portfolio_krw, self.market)
+            risk_check = self.risk_manager.check_risk_limits(position_krw, total_portfolio_krw, target_market)
 
             if not risk_check.get('approved'):
                 self.log(f"⚠️ 리스크 한도 초과: {risk_check.get('reason')}")
@@ -459,7 +531,7 @@ class TradingBot:
             slippage_data = None
             execution_quality = ""
             if self.enable_limit_orders:
-                slippage_data = self.execution_manager.estimate_slippage(self.market, 'buy', position_krw)
+                slippage_data = self.execution_manager.estimate_slippage(target_market, 'buy', position_krw)
                 if slippage_data:
                     execution_quality = f"\n📊 예상 슬리피지: {slippage_data['estimated_slippage']:.3f}%"
                     execution_quality += f"\n💡 {slippage_data['recommendation']}"
@@ -477,7 +549,7 @@ class TradingBot:
                 if self.enable_limit_orders and slippage_data and slippage_data['estimated_slippage'] > 0.10:
                     # 슬리피지 > 0.1%면 지정가 사용
                     order_result = self.execution_manager.execute_limit_order(
-                        self.market, 'buy', position_krw,
+                        target_market, 'buy', position_krw,
                         price_strategy=self.limit_order_strategy,
                         max_wait_seconds=20
                     )
@@ -492,20 +564,20 @@ class TradingBot:
                         amount = position_krw / price
                 else:
                     # 시장가 주문
-                    result = self.upbit.order_market_buy(self.market, position_krw)
+                    result = self.upbit.order_market_buy(target_market, position_krw)
                     executed_price = price
                     amount = position_krw / price
                     execution_quality += "\n📍 시장가 체결"
 
-            self.position = {
+            # 멀티 코인: 포지션 딕셔너리에 추가
+            position_data = {
+                'market': target_market,
                 'buy_price': executed_price if not self.dry_run else price,
                 'buy_time': datetime.now(),
                 'amount': amount,
                 'buy_krw': krw
             }
-            
-            self.position_peak_profit = 0
-            self.position_lowest_profit = 0
+            self.add_position(target_market, position_data)
             
             self.trade_history.append({
                 'type': 'BUY',
@@ -538,7 +610,8 @@ class TradingBot:
             msg += f"{'='*30}\n\n"
 
             # 코인 정보
-            msg += f"🪙 <b>{self.market.replace('KRW-', '')}</b>\n"
+            msg += f"🪙 <b>{target_market.replace('KRW-', '')}</b>\n"
+            msg += f"🎯 <b>보유 포지션: {len(self.positions)}/{self.max_positions}</b>\n"
             msg += f"💰 <b>{price:,.0f}원</b> × {amount:.6f}\n"
             msg += f"💵 투자금: <b>{position_krw:,.0f}원</b> ({position_krw/krw*100:.0f}% 사용)\n"
             msg += f"💼 잔액: {krw - position_krw:,.0f}원\n\n"
@@ -648,50 +721,66 @@ class TradingBot:
             self.telegram.send_message(f"❌ 매수 실패: {e}")
             return False
     
-    def sell(self, status, signals, reason):
-        """매도 실행"""
-        if not self.position:
+    def sell(self, status, signals, reason, market=None):
+        """매도 실행 (멀티 코인 지원)"""
+        # 멀티 코인: market 파라미터 사용, 없으면 self.market 사용
+        target_market = market or self.market
+
+        # 해당 마켓의 포지션 조회
+        position = self.get_position_for_market(target_market)
+        if not position:
             return False
-        
-        coin = status['coin']
-        if coin < 0.001:
-            self.position = None
+
+        # 현재 보유 수량 확인
+        balances = self.upbit.get_balances()
+        coin_balance = 0
+        for balance in balances:
+            if balance['currency'] == target_market.replace('KRW-', ''):
+                coin_balance = float(balance['balance'])
+                break
+
+        if coin_balance < 0.001:
+            self.remove_position(target_market)
             return False
-        
+
         try:
             price = signals['price']
-            buy_price = self.position['buy_price']
+            buy_price = position['buy_price']
             profit_rate = (price - buy_price) / buy_price * 100
-            
-            hold_hours = (datetime.now() - self.position['buy_time']).total_seconds() / 3600
+
+            hold_hours = (datetime.now() - position['buy_time']).total_seconds() / 3600
 
             # 드라이런 모드: 가상 거래
             if self.dry_run:
-                sell_krw = coin * price
-                profit = sell_krw - self.position['buy_krw']
+                sell_krw = coin_balance * price
+                profit = sell_krw - position['buy_krw']
                 self.virtual_krw = sell_krw
                 self.virtual_coin = 0
                 self.virtual_avg_price = 0
             # 실제 주문
             else:
-                self.upbit.order_market_sell(self.market, coin)
+                self.upbit.order_market_sell(target_market, coin_balance)
 
-            sell_krw = coin * price
-            profit = sell_krw - self.position['buy_krw']
+            sell_krw = coin_balance * price
+            profit = sell_krw - position['buy_krw']
+
+            # 포지션의 peak/low 가져오기
+            position_peak = self.position_peaks.get(target_market, 0)
+            position_low = self.position_lows.get(target_market, 0)
 
             # 거래 기록 생성
             trade_record = {
-                'market': self.market,
+                'market': target_market,
                 'type': 'SELL',
                 'time': datetime.now(),
                 'price': price,
-                'amount': coin,
+                'amount': coin_balance,
                 'krw_amount': sell_krw,
                 'profit': profit,
                 'profit_rate': profit_rate / 100,  # DB에는 0.01 형식으로 저장
                 'reason': reason,
                 'hold_time_minutes': int(hold_hours * 60),
-                'peak_profit': self.position_peak_profit
+                'peak_profit': position_peak
             }
 
             self.trade_history.append(trade_record)
@@ -712,10 +801,11 @@ class TradingBot:
             msg += f"{'='*30}\n\n"
 
             # 코인 및 거래 정보
-            msg += f"🪙 <b>{self.market.replace('KRW-', '')}</b>\n"
+            msg += f"🪙 <b>{target_market.replace('KRW-', '')}</b>\n"
+            msg += f"🎯 <b>남은 포지션: {len(self.positions)-1}/{self.max_positions}</b>\n"
             msg += f"💰 매도가: <b>{price:,.0f}원</b>\n"
             msg += f"📈 매수가: {buy_price:,.0f}원\n"
-            msg += f"📊 수량: {coin:.6f}\n\n"
+            msg += f"📊 수량: {coin_balance:.6f}\n\n"
 
             # 수익 정보 (강조)
             profit_emoji = "💰" if profit > 0 else "💸"
@@ -736,12 +826,12 @@ class TradingBot:
                 msg += f"  • {hold_days}일 {remaining_hours:.1f}시간\n"
             else:
                 msg += f"  • {hold_hours:.1f}시간\n"
-            msg += f"  • 최고 수익률: {self.position_peak_profit*100:+.2f}%\n"
-            msg += f"  • 최저 수익률: {self.position_lowest_profit*100:+.2f}%\n"
+            msg += f"  • 최고 수익률: {position_peak*100:+.2f}%\n"
+            msg += f"  • 최저 수익률: {position_low*100:+.2f}%\n"
 
             # 수익 포기 계산 (최고점 대비)
-            if self.position_peak_profit > 0:
-                missed_profit = (self.position_peak_profit - (profit_rate/100)) * 100
+            if position_peak > 0:
+                missed_profit = (position_peak - (profit_rate/100)) * 100
                 if missed_profit > 0:
                     msg += f"  • 최고점 대비: -{missed_profit:.2f}%p ⬇️\n"
             msg += "\n"
@@ -749,12 +839,13 @@ class TradingBot:
             # 매도 사유
             msg += f"📝 <b>매도 사유</b>: {reason}\n\n"
 
-            # 현재 시장 상태
-            msg += f"📊 <b>시장 정보</b>\n"
-            msg += f"  • RSI: {signals['rsi']:.1f}"
-            msg += f" ({'과매도' if signals['rsi'] < 30 else '중립' if signals['rsi'] < 70 else '과매수'})\n"
-            msg += f"  • 가격 위치: {signals['bb_pos']:.0f}%"
-            msg += f" ({'하단' if signals['bb_pos'] < 20 else '중간' if signals['bb_pos'] < 80 else '상단'})\n\n"
+            # 현재 시장 상태 (선택적)
+            if 'rsi' in signals and 'bb_pos' in signals:
+                msg += f"📊 <b>시장 정보</b>\n"
+                msg += f"  • RSI: {signals['rsi']:.1f}"
+                msg += f" ({'과매도' if signals['rsi'] < 30 else '중립' if signals['rsi'] < 70 else '과매수'})\n"
+                msg += f"  • 가격 위치: {signals['bb_pos']:.0f}%"
+                msg += f" ({'하단' if signals['bb_pos'] < 20 else '중간' if signals['bb_pos'] < 80 else '상단'})\n\n"
 
             # 일일 손익 업데이트
             projected_daily_pnl = (self.daily_pnl + (profit / 1000000)) * 100
@@ -785,20 +876,19 @@ class TradingBot:
             msg += f"{'='*30}"
             
             self.telegram.send_message(msg)
-            self.log("✅ 매도 완료")
-            
-            self.position = None
-            self.position_peak_profit = 0
-            self.position_lowest_profit = 0
-            
+            self.log(f"✅ {target_market} 매도 완료")
+
+            # 멀티 코인: 해당 마켓의 포지션 제거
+            self.remove_position(target_market)
+
             # 일일 손실 업데이트
             self.update_daily_pnl(profit)
 
             return True
 
         except Exception as e:
-            self.log(f"❌ 매도 실패: {e}")
-            self.telegram.send_message(f"❌ 매도 실패: {e}")
+            self.log(f"❌ {target_market} 매도 실패: {e}")
+            self.telegram.send_message(f"❌ {target_market} 매도 실패: {e}")
             return False
 
     def partial_sell(self, status, signals, ratio, reason):
@@ -1139,8 +1229,188 @@ class TradingBot:
             # 실패 시 기본 15분봉으로 fallback
             return self.get_signals(15)
 
+    def check_and_trade_multi_coin(self):
+        """멀티 코인 동시 보유 메인 로직"""
+        try:
+            # 일일 손실 제한 체크
+            if self.trading_paused:
+                self.log(f"⏸️ 거래 중단: 일일 손실 {self.daily_pnl*100:.2f}%")
+                return
+
+            # 1. 보유 중인 포지션들 체크 (매도 기회)
+            for market in list(self.positions.keys()):  # copy to avoid modification during iteration
+                self.check_and_trade_single_coin(market)
+
+            # 2. 새로운 매수 기회 찾기 (포지션이 꽉 차지 않았을 때)
+            if self.can_add_position() and self.enable_multi_coin and self.market_scanner:
+                # TOP 코인들 스캔
+                markets_to_scan = ['KRW-BTC', 'KRW-ETH', 'KRW-XRP', 'KRW-SOL', 'KRW-DOGE']
+
+                best_opportunity = None
+                best_score = 0
+
+                for market in markets_to_scan:
+                    # 이미 보유 중이면 스킵
+                    if self.has_position_for_market(market):
+                        continue
+
+                    # MA 크로스오버 체크
+                    if self.enable_ma_crossover:
+                        ma_opp = self.ma_strategy.check_trading_opportunity(market, self.upbit, None)
+                        if ma_opp and ma_opp['action'] == 'buy':
+                            score = ma_opp['confidence'] * 100
+                            if score > best_score:
+                                best_score = score
+                                best_opportunity = {
+                                    'market': market,
+                                    'type': 'ma_crossover',
+                                    'opportunity': ma_opp
+                                }
+
+                    # 스캘핑 체크
+                    if self.enable_scalping:
+                        scalping_opp = self.scalping_strategy.check_scalping_opportunity(market, self.upbit, None)
+                        if scalping_opp and scalping_opp['action'] == 'buy':
+                            score = scalping_opp['confidence'] * 100
+                            if score > best_score:
+                                best_score = score
+                                best_opportunity = {
+                                    'market': market,
+                                    'type': 'scalping',
+                                    'opportunity': scalping_opp
+                                }
+
+                # 가장 좋은 기회가 있으면 매수
+                if best_opportunity:
+                    market = best_opportunity['market']
+                    opp_type = best_opportunity['type']
+                    opp = best_opportunity['opportunity']
+
+                    self.log(f"💰 새 매수 기회: {market} ({opp_type}, 신뢰도 {opp['confidence']*100:.0f}%)")
+
+                    # 해당 마켓으로 전환하여 매수
+                    self.check_and_trade_single_coin(market, force_buy_opportunity=best_opportunity)
+
+        except Exception as e:
+            self.log(f"❌ 멀티 코인 체크 실패: {e}")
+            import traceback
+            traceback.print_exc()
+
     def check_and_trade(self):
-        """메인 로직 (Tier 2+3 개선: 다중 시간대 + 시장 상태)"""
+        """메인 체크 로직 - 멀티 코인 동시 보유"""
+        # 멀티 코인 모드로 실행
+        self.check_and_trade_multi_coin()
+
+    def check_and_trade_single_coin(self, market=None, force_buy_opportunity=None):
+        """단일 코인 체크 및 거래 (멀티 코인 지원 버전)"""
+        target_market = market or self.market
+
+        # 해당 마켓의 포지션 조회
+        position = self.get_position_for_market(target_market)
+
+        try:
+            # 강제 매수 기회가 있으면 바로 매수 실행
+            if force_buy_opportunity:
+                opp_type = force_buy_opportunity['type']
+                opp = force_buy_opportunity['opportunity']
+
+                status = self.get_current_status()
+                signals = {
+                    'price': status['current_price'],
+                    'rsi': 50,
+                    'buy_signal_count': 1
+                }
+
+                self.buy(status, signals, market=target_market)
+
+                # 매수 성공하면 포지션에 정보 저장
+                position = self.get_position_for_market(target_market)
+                if position:
+                    if opp_type == 'ma_crossover':
+                        position['target_profit'] = opp.get('target_profit', 2.0)
+                        position['stop_loss'] = opp.get('stop_loss', -1.0)
+                        position['is_ma_crossover'] = True
+                    elif opp_type == 'scalping':
+                        position['target_profit'] = opp.get('target_profit', 1.5)
+                        position['stop_loss'] = opp.get('stop_loss', -1.0)
+                        position['is_scalping'] = True
+                        self.scalping_strategy.record_trade(target_market, 'buy', signals['price'])
+                return
+
+            # 포지션이 없으면 체크 종료 (매도할 게 없음)
+            if not position:
+                return
+
+            # 현재가 조회
+            ticker = self.upbit.get_ticker(target_market)
+            if not ticker:
+                return
+
+            current_price = ticker['trade_price']
+            buy_price = position['buy_price']
+            profit_rate = (current_price - buy_price) / buy_price
+
+            # 포지션별 peak/low 업데이트
+            if profit_rate > self.position_peaks.get(target_market, 0):
+                self.position_peaks[target_market] = profit_rate
+            if profit_rate < self.position_lows.get(target_market, 0):
+                self.position_lows[target_market] = profit_rate
+
+            # 보유 시간
+            hold_hours = (datetime.now() - position['buy_time']).total_seconds() / 3600
+
+            self.log(f"[{target_market}] 포지션: {profit_rate*100:+.2f}% (최고: {self.position_peaks.get(target_market, 0)*100:+.2f}%) | 보유: {hold_hours:.1f}h")
+
+            # === 1순위: MA 크로스오버 매도 체크 ===
+            if self.enable_ma_crossover and not position.get('is_scalping'):
+                ma_opp = self.ma_strategy.check_trading_opportunity(target_market, self.upbit, position)
+
+                if ma_opp and ma_opp['action'] == 'sell':
+                    reason = ma_opp['reason']
+                    self.log(f"📈 {target_market} MA 데스 크로스 → 매도")
+
+                    signals = {'price': current_price}
+                    self.sell(None, signals, reason, market=target_market)
+                    return
+
+            # === 2순위: 스캘핑 매도 체크 ===
+            if self.enable_scalping:
+                scalping_opp = self.scalping_strategy.check_scalping_opportunity(target_market, self.upbit, position)
+
+                if scalping_opp and scalping_opp['action'] == 'sell':
+                    reason = scalping_opp['reason']
+                    self.log(f"⚡ {target_market} 스캘핑 매도: {reason}")
+
+                    signals = {'price': current_price}
+                    self.sell(None, signals, reason, market=target_market)
+                    self.scalping_strategy.record_trade(target_market, 'sell', current_price)
+                    return
+
+            # === 3순위: 기본 익절/손절 체크 ===
+            target_profit = position.get('target_profit', self.take_profit_1)
+            stop_loss = position.get('stop_loss', self.stop_loss)
+
+            if profit_rate >= target_profit:
+                reason = f"목표 수익 달성 ({profit_rate*100:.2f}% >= {target_profit*100:.2f}%)"
+                self.log(f"💰 {target_market} {reason}")
+                signals = {'price': current_price}
+                self.sell(None, signals, reason, market=target_market)
+                return
+
+            if profit_rate <= stop_loss:
+                reason = f"손절 ({profit_rate*100:.2f}% <= {stop_loss*100:.2f}%)"
+                self.log(f"🔴 {target_market} {reason}")
+                signals = {'price': current_price}
+                self.sell(None, signals, reason, market=target_market)
+                return
+
+        except Exception as e:
+            self.log(f"❌ {target_market} 체크 실패: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def check_and_trade_legacy(self):
+        """레거시 단일 코인 로직 (백업용)"""
         try:
             # 일일 손실 제한 체크 (Tier 1 개선)
             if self.trading_paused:
@@ -1166,278 +1436,20 @@ class TradingBot:
                 if bear_market_active:
                     self.log(f"🐻 강한 약세장 (BTC RSI: {btc_rsi:.1f}) - 과매도 반등만 매수")
 
-            status = self.get_current_status()
+            # 레거시 로직은 더 이상 사용하지 않음 (멀티 코인 모드로 대체)
+            pass
 
-            # === 1순위: MA 크로스오버 (가장 신뢰도 높음) ===
-            if self.enable_ma_crossover:
-                ma_opp = self.ma_strategy.check_trading_opportunity(
-                    self.market, self.upbit, self.position
-                )
-
-                # 디버그: MA 상태 로그
-                if ma_opp is None:
-                    self.log("🔍 MA: 크로스오버 없음")
-
-                if ma_opp:
-                    action = ma_opp['action']
-                    reason = ma_opp['reason']
-                    confidence = ma_opp['confidence'] * 100
-                    fast_ma = ma_opp['fast_ma']
-                    slow_ma = ma_opp['slow_ma']
-
-                    self.log(f"📈 MA 크로스오버: {action.upper()}")
-                    self.log(f"   사유: {reason}")
-                    self.log(f"   신뢰도: {confidence:.0f}%")
-                    self.log(f"   MA7: {fast_ma:,.0f}원 / MA25: {slow_ma:,.0f}원")
-
-                    if action == 'buy' and not self.position:
-                        # MA 크로스오버 매수
-                        signals = self.get_multi_timeframe_signals()
-                        if not signals:
-                            self.log("⚠️ 기술적 신호 없지만 MA 크로스오버 매수")
-                            signals = {
-                                'price': status['current_price'],
-                                'rsi': 50,  # 중립값
-                                'buy_signal_count': 1
-                            }
-
-                        self.buy(status, signals)
-                        if self.position:
-                            self.position['target_profit'] = ma_opp.get('target_profit', 2.0)
-                            self.position['stop_loss'] = ma_opp.get('stop_loss', -1.0)
-                            self.position['is_ma_crossover'] = True
-                        return
-
-                    elif action == 'sell' and self.position:
-                        # MA 크로스오버 매도 (스캘핑 포지션은 제외)
-                        if self.position.get('is_scalping'):
-                            self.log("⚠️ 스캘핑 포지션 - MA 매도 무시")
-                            # 스캘핑은 스캘핑 조건으로만 매도
-                        else:
-                            signals = self.get_multi_timeframe_signals()
-                            if not signals:
-                                signals = {'price': status['current_price']}
-
-                            self.sell(status, signals, reason)
-                            return
-
-            # === 2순위: 변동성 스캘핑 체크 (약세장에서도 작동) ===
-            if self.enable_scalping:
-                scalping_opp = self.scalping_strategy.check_scalping_opportunity(
-                    self.market, self.upbit, self.position
-                )
-
-                # 디버그: 스캘핑 상태 로그
-                if scalping_opp is None:
-                    self.log("🔍 스캘핑: 기회 없음")
-
-                if scalping_opp:
-                    action = scalping_opp['action']
-                    reason = scalping_opp['reason']
-                    confidence = scalping_opp['confidence'] * 100
-
-                    self.log(f"⚡ 스캘핑 기회: {action.upper()}")
-                    self.log(f"   사유: {reason}")
-                    self.log(f"   신뢰도: {confidence:.0f}%")
-
-                    if action == 'buy' and not self.position:
-                        # 스캘핑 매수 (독립 실행 - RSI/볼린저 신호 무시)
-                        signals = self.get_multi_timeframe_signals()
-                        if not signals:
-                            # signals가 없어도 스캘핑은 실행
-                            self.log("⚠️ 기술적 신호 없지만 스캘핑 강제 매수")
-                            signals = {
-                                'price': status['current_price'],
-                                'rsi': 50,  # 중립값
-                                'buy_signal_count': 1
-                            }
-
-                        self.buy(status, signals)
-                        if self.position:
-                            self.position['target_profit'] = scalping_opp.get('target_profit', 1.5)
-                            self.position['stop_loss'] = scalping_opp.get('stop_loss', -1.0)
-                            self.position['is_scalping'] = True
-                            self.scalping_strategy.record_trade(self.market, 'buy', signals['price'])
-                        return
-
-                    elif action == 'sell' and self.position:
-                        # 스캘핑 매도 (독립 실행)
-                        signals = self.get_multi_timeframe_signals()
-                        if not signals:
-                            signals = {'price': status['current_price']}
-
-                        self.sell(status, signals, reason)
-                        self.scalping_strategy.record_trade(self.market, 'sell', signals['price'])
-                        return
-
-            # === 3순위: 멀티 코인 모드 (기존 로직) ===
-            if self.enable_multi_coin and not self.position and self.market_scanner:
-                best_buy_signal = self.scan_multi_coin_buy_signals()
-
-                # 약세장에서는 더 강한 신호 요구 (3/3 만족)
-                if bear_market_active and best_buy_signal:
-                    if best_buy_signal['buy_signal_count'] < 3:
-                        self.log(f"⚠️ 약세장: 매수 신호 약함 ({best_buy_signal['buy_signal_count']}/3) - 대기")
-                        best_buy_signal = None
-
-                if best_buy_signal:
-                    # 가장 강한 매수 신호가 나온 코인으로 즉시 전환
-                    if best_buy_signal['market'] != self.market:
-                        signal_type = "스캘핑" if best_buy_signal.get('is_scalping') else f"매수신호 {best_buy_signal['buy_signal_count']}/3"
-                        self.log(f"💱 즉시 전환: {self.market.replace('KRW-', '')} → {best_buy_signal['name']} ({signal_type})")
-                        self.market = best_buy_signal['market']
-
-                    signals = best_buy_signal['signals']
-
-                    # 스캘핑 정보 저장
-                    if best_buy_signal.get('is_scalping'):
-                        signals['is_scalping'] = True
-                        signals['scalping_target'] = best_buy_signal.get('scalping_target')
-                        signals['scalping_stop'] = best_buy_signal.get('scalping_stop')
-                else:
-                    # 매수 신호 없으면 기존 로직 (코인 전환 검토)
-                    self.check_multi_coin_switch()
-                    signals = self.get_multi_timeframe_signals()
-            else:
-                # 포지션 있거나 싱글 코인 모드: 현재 코인만 체크
-                signals = self.get_multi_timeframe_signals()
-
-            if not signals:
-                self.log("신호 없음")
-                return
-
-            self.log(f"\n[{datetime.now().strftime('%H:%M:%S')}] 체크 ({self.market.replace('KRW-', '')})")
-            self.log(f"자산: {status['total']:,.0f}원 | RSI: {signals['rsi']:.1f}")
-
-            # Tier 2: 다중 시간대 신호 강도 로그
-            if 'buy_signal_count' in signals:
-                self.log(f"📊 매수신호: {signals['buy_signal_count']}/3 (1m/5m/15m)"
-                        f"{' 🔥' if signals.get('very_strong_buy') else ' ✅' if signals.get('strong_buy') else ''}")
-
-            # 포지션 있음
-            if self.position:
-                price = signals['price']
-                buy_price = self.position['buy_price']
-                profit_rate = (price - buy_price) / buy_price
-
-                # 최고/최저 업데이트
-                if profit_rate > self.position_peak_profit:
-                    self.position_peak_profit = profit_rate
-                if profit_rate < self.position_lowest_profit:
-                    self.position_lowest_profit = profit_rate
-
-                # 포지션 보유 시간
-                hold_hours = (datetime.now() - self.position['buy_time']).total_seconds() / 3600
-                hold_minutes = hold_hours * 60
-
-                self.log(f"포지션: {profit_rate*100:+.2f}% (최고: {self.position_peak_profit*100:+.2f}%) | 보유: {hold_hours:.1f}h")
-
-                # === 시간대별 파라미터 동적 조절 ===
-                session = TimeBasedStrategy.get_trading_session()
-                base_params = {
-                    'quick_profit': self.quick_profit,
-                    'take_profit_1': self.take_profit_1,
-                    'rsi_buy': self.rsi_buy
-                }
-                adjusted_params = TimeBasedStrategy.adjust_parameters(base_params, session)
-
-                # 조절된 파라미터 사용
-                quick_profit_adj = adjusted_params['quick_profit']
-                take_profit_1_adj = adjusted_params['take_profit_1']
-
-                # Tier 2 개선: 적응형 손절 레벨 계산
-                adaptive_stop_loss = self.get_adaptive_stop_loss()
-
-                # === 부분 익절 시스템 (Tier 1 + Tier 2 개선) ===
-                if self.enable_partial_sell:
-                    sold_ratio = self.position.get('sold_ratio', 0)
-
-                    # Tier 2: 시간 기반 익절 완화 (30분 이후 임계값 낮춤)
-                    tp1_threshold = self.take_profit_1
-                    tp2_threshold = self.take_profit_2
-                    tp3_threshold = self.take_profit_3
-
-                    if self.time_based_profit_relaxation and hold_minutes > self.relaxation_time_minutes:
-                        tp1_threshold -= self.profit_relaxation_amount  # 1.5% → 1.2%
-                        tp2_threshold -= self.profit_relaxation_amount  # 2.5% → 2.2%
-                        tp3_threshold -= self.profit_relaxation_amount  # 4.0% → 3.7%
-                        self.log(f"⏱️ 익절 완화: 30분 경과 (1차: {tp1_threshold*100:.1f}%, 2차: {tp2_threshold*100:.1f}%, 3차: {tp3_threshold*100:.1f}%)")
-
-                    # 1. 퀵 익절 (30분 이내, 시간대별 조절) - 전체 매도
-                    if hold_minutes <= 30 and profit_rate >= quick_profit_adj:
-                        self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%, {session['name']})")
-
-                    # 2. 1차 익절 (1.5% 또는 완화된 임계값) - 50% 부분 매도
-                    elif profit_rate >= tp1_threshold and sold_ratio < 0.5:
-                        self.partial_sell(status, signals, 0.50, f"✅ 1차익절 50% ({profit_rate*100:.2f}%)")
-
-                    # 3. 2차 익절 (2.5% 또는 완화된 임계값) - 추가 30% 부분 매도
-                    elif profit_rate >= tp2_threshold and sold_ratio < 0.8:
-                        remaining = 1.0 - sold_ratio
-                        ratio = 0.30 / (1.0 - 0.5) if sold_ratio >= 0.5 else 0.30
-                        self.partial_sell(status, signals, min(ratio, remaining), f"✅ 2차익절 30% ({profit_rate*100:.2f}%)")
-
-                    # 4. 최종 익절 (4% 또는 완화된 임계값) - 남은 전부 매도
-                    elif profit_rate >= tp3_threshold:
-                        self.sell(status, signals, f"🎯 최종익절 ({profit_rate*100:.2f}%)")
-
-                # 기존 방식 (부분 익절 비활성화 시)
-                else:
-                    # 1. 퀵 익절 (30분 이내, 시간대별 조절)
-                    if hold_minutes <= 30 and profit_rate >= quick_profit_adj:
-                        self.sell(status, signals, f"⚡ 퀵익절 ({profit_rate*100:.2f}%, {session['name']})")
-                    # 2. 최종 익절 (4%)
-                    elif profit_rate >= self.take_profit_3:
-                        self.sell(status, signals, f"🎯 최종익절 ({profit_rate*100:.2f}%)")
-                    # 3. 2차 익절 (2.5%)
-                    elif profit_rate >= self.take_profit_2:
-                        self.sell(status, signals, f"✅ 2차익절 ({profit_rate*100:.2f}%)")
-                    # 4. 1차 익절 (시간대별 조절)
-                    elif profit_rate >= take_profit_1_adj:
-                        self.sell(status, signals, f"✅ 1차익절 ({profit_rate*100:.2f}%, {session['name']})")
-
-                    # === 손절 (Tier 2: 적응형) ===
-                    elif profit_rate <= adaptive_stop_loss:
-                        self.sell(status, signals, f"❌ 손절 ({profit_rate*100:.2f}%, 임계값: {adaptive_stop_loss*100:.2f}%)")
-
-                    # === 동적 트레일링 스톱 ===
-                    # 1.5% 이상 수익 시: -0.8% 트레일링
-                    elif self.position_peak_profit >= 0.015 and profit_rate < self.position_peak_profit - self.trailing_stop_wide:
-                        self.sell(status, signals, f"📉 트레일링스톱-와이드 (최고 {self.position_peak_profit*100:.2f}%)")
-
-                    # 0.8% 이상 수익 시: -0.5% 트레일링
-                    elif self.position_peak_profit >= 0.008 and profit_rate < self.position_peak_profit - self.trailing_stop_medium:
-                        self.sell(status, signals, f"📉 트레일링스톱-미디엄 (최고 {self.position_peak_profit*100:.2f}%)")
-
-                    # 0.3% 이상 수익 시: -0.3% 트레일링 (핵심 개선!)
-                    elif self.position_peak_profit >= 0.003 and profit_rate < self.position_peak_profit - self.trailing_stop_tight:
-                        self.sell(status, signals, f"📉 트레일링스톱-타이트 (최고 {self.position_peak_profit*100:.2f}%)")
-
-                    # === 포지션 타임아웃 ===
-                    # 3시간 이상 보유 + 손실 중이면 청산
-                    elif hold_hours >= self.position_timeout_hours and profit_rate < 0:
-                        self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
-
-                    # 3시간 이상 보유 + 수익 미미하면 청산
-                    elif hold_hours >= self.position_timeout_hours and profit_rate < 0.005:
-                        self.sell(status, signals, f"⏰ 타임아웃청산 ({hold_hours:.1f}h, {profit_rate*100:.2f}%)")
-
-                    # === RSI 과열 신호 ===
-                    elif signals['sell'] and profit_rate > 0:
-                        self.sell(status, signals, f"📊 RSI과열 ({profit_rate*100:.2f}%)")
-            
-            # 포지션 없음
-            else:
-                if signals['buy']:
-                    self.buy(status, signals)
-            
-            self.error_count = 0
-            
         except Exception as e:
-            self.error_count += 1
-            self.log(f"오류: {e}")
-            if self.error_count >= 3:
-                self.telegram.send_message(f"⚠️ 연속 오류 {self.error_count}회\n{e}")
+            self.log(f"❌ 레거시 체크 실패: {e}")
+
+    def check_and_trade_legacy_old(self):
+        """완전히 제거 예정 - 멀티 코인 모드로 대체됨"""
+        try:
+            # 더 이상 사용하지 않음
+            pass
+
+        except Exception as e:
+            self.log(f"레거시 로직 오류: {e}")
     
     def daily_report(self):
         """일일 리포트"""
