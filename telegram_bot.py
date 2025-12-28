@@ -444,7 +444,13 @@ class TradingBot:
                 position_krw = min(krw, 5000)
 
             # === Phase 1: 리스크 한도 체크 (VaR) ===
-            total_portfolio_krw = krw  # 전체 포트폴리오 가치
+            # 전체 포트폴리오 가치 = KRW + 보유 코인 가치
+            total_portfolio_krw = status['total']  # KRW + 코인 평가액
+
+            # 디버그 로그
+            self.log(f"🔍 리스크 체크: 매수금액={position_krw:,.0f}원, 전체자산={total_portfolio_krw:,.0f}원, "
+                    f"비율={position_krw/total_portfolio_krw*100:.1f}%")
+
             risk_check = self.risk_manager.check_risk_limits(position_krw, total_portfolio_krw, self.market)
 
             if not risk_check.get('approved'):

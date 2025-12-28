@@ -267,13 +267,13 @@ class RiskManager:
             }
         """
         try:
-            # 1. 포지션 크기 제한 (단일 코인 최대 30%)
+            # 1. 포지션 크기 제한 (단일 코인 최대 80% - 스캘핑용 완화)
             position_pct = (position_krw / total_portfolio_krw) * 100 if total_portfolio_krw > 0 else 0
 
-            if position_pct > 30:
+            if position_pct > 80:
                 return {
                     'approved': False,
-                    'reason': f"포지션 크기 초과 ({position_pct:.1f}% > 30%)",
+                    'reason': f"포지션 크기 초과 ({position_pct:.1f}% > 80%)",
                     'position_size_pct': position_pct
                 }
 
