@@ -65,20 +65,25 @@ class VolatilityScalpingStrategy:
             change_5m = ((candles_5m[0]['trade_price'] - candles_5m[1]['trade_price'])
                         / candles_5m[1]['trade_price']) * 100
 
-            # 급등 감지 (1분봉에서 연속 상승)
+            # 급등 감지 (조건 대폭 완화)
             consecutive_up = sum(1 for c in recent_changes if c > 0)
-            strong_up = sum(1 for c in recent_changes if c > 0.5)
+            strong_up = sum(1 for c in recent_changes if c > 0.3)  # 0.5 → 0.3
 
-            # 급락 감지 (1분봉에서 연속 하락)
+            # 급락 감지 (조건 대폭 완화)
             consecutive_down = sum(1 for c in recent_changes if c < 0)
-            strong_down = sum(1 for c in recent_changes if c < -0.5)
+            strong_down = sum(1 for c in recent_changes if c < -0.3)  # -0.5 → -0.3
+
+            # 평균 변화율
+            change_1m_avg = sum(recent_changes) / len(recent_changes)
 
             return {
-                'spike_up': consecutive_up >= 4 or strong_up >= 3,
-                'spike_down': consecutive_down >= 4 or strong_down >= 3,
-                'change_1m_avg': sum(recent_changes) / len(recent_changes),
+                # 급등: 2개 이상 상승 (조건 완화)
+                'spike_up': consecutive_up >= 2 or strong_up >= 2,
+                # 급락: 2개 이상 하락 (조건 완화)
+                'spike_down': consecutive_down >= 2 or strong_down >= 2,
+                'change_1m_avg': change_1m_avg,
                 'change_5m': change_5m,
-                'strong_momentum': abs(change_5m) > 2.0
+                'strong_momentum': abs(change_5m) > 1.0  # 2.0 → 1.0 (완화)
             }
 
         except Exception as e:
