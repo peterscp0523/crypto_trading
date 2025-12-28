@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  # 실전 봇 (드라이런 모드로 로컬 테스트)
+  trading-bot:
+    build: .
+    container_name: crypto-trading-bot-local
+    restart: unless-stopped
+    environment:
+      - UPBIT_ACCESS_KEY=${UPBIT_ACCESS_KEY}
+      - UPBIT_SECRET_KEY=${UPBIT_SECRET_KEY}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - MARKET=${MARKET:-KRW-ETH}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - ENABLE_MULTI_COIN=true
+      - USE_ORACLE_DB=false  # 로컬에서는 SQLite 사용
+    volumes:
+      - ./trading_bot.db:/app/trading_bot.db
+    # 로그를 stdout으로 출력
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

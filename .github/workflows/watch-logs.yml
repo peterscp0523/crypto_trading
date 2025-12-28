@@ -1,0 +1,39 @@
+name: Watch Bot Logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      lines:
+        description: 'Number of log lines to show'
+        required: false
+        default: '100'
+      follow:
+        description: 'Follow logs (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  watch-logs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Watch Docker Logs
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USERNAME }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            echo "=== Container Status ==="
+            docker ps -a | grep crypto-trading-bot
+
+            echo ""
+            echo "=== Recent Logs (Last ${{ github.event.inputs.lines }} lines) ==="
+
+            if [ "${{ github.event.inputs.follow }}" == "true" ]; then
+              # Follow 모드 (60초간)
+              timeout 60 docker logs -f --tail ${{ github.event.inputs.lines }} crypto-trading-bot || true
+            else
+              # 일회성 출력
+              docker logs --tail ${{ github.event.inputs.lines }} crypto-trading-bot
+            fi
