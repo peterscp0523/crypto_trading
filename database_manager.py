@@ -46,7 +46,7 @@ class DatabaseManager:
                         dsn=os.environ.get('ORACLE_DB_DSN'),
                         config_dir=wallet_dir,
                         wallet_location=wallet_dir,
-                        wallet_password=os.environ.get('ORACLE_DB_PASSWORD')
+                        wallet_password=os.environ.get('ORACLE_WALLET_PASSWORD')  # Wallet 비밀번호
                     )
                 else:
                     # Wallet 없이 연결 (로컬 테스트용)

@@ -79,6 +79,7 @@ jobs:
               -e ORACLE_DB_USER="${{ secrets.ORACLE_DB_USER }}" \
               -e ORACLE_DB_PASSWORD="${{ secrets.ORACLE_DB_PASSWORD }}" \
               -e ORACLE_DB_DSN="${{ secrets.ORACLE_DB_DSN }}" \
+              -e ORACLE_WALLET_PASSWORD="${{ secrets.ORACLE_WALLET_PASSWORD }}" \
               -e TNS_ADMIN="/app/wallet" \
               ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
 
