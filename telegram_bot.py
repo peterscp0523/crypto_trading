@@ -473,7 +473,7 @@ class TradingBot:
         total = 0
         for market, pos in self.positions.items():
             # 현재가 조회
-            ticker = self.upbit.get_ticker(market)
+            ticker = self.upbit.get_current_price(market)
             if ticker:
                 current_price = ticker['trade_price']
                 total += pos['amount'] * current_price
@@ -1342,7 +1342,7 @@ class TradingBot:
                 return
 
             # 현재가 조회
-            ticker = self.upbit.get_ticker(target_market)
+            ticker = self.upbit.get_current_price(target_market)
             if not ticker:
                 return
 
