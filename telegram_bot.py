@@ -569,16 +569,23 @@ class TradingBot:
                         # 시장가 주문 결과 확인
                         if not result or 'error' in result:
                             error_msg = result.get('error', {}).get('message', '알 수 없는 오류') if result else 'API 응답 없음'
-                            self.log(f"❌ 시장가 매수 실패: {error_msg}")
+                            self.log(f"❌ 폴백 시장가 매수 실패: {error_msg}")
                             self.telegram.send_message(
                                 f"❌ <b>매수 실패</b>\n"
                                 f"{'='*30}\n\n"
                                 f"🪙 {target_market}\n"
                                 f"💵 시도 금액: {position_krw:,.0f}원\n"
-                                f"❗ 오류: {error_msg}"
+                                f"❗ 오류: 지정가 실패 후 시장가도 실패\n"
+                                f"📝 {error_msg}"
                             )
                             return False
 
+                        # UUID 확인
+                        if 'uuid' not in result:
+                            self.log(f"❌ 폴백 시장가 실패: UUID 없음, 응답={result}")
+                            return False
+
+                        self.log(f"⚠️ 지정가 실패, 시장가로 체결: UUID={result.get('uuid')}")
                         executed_price = price
                         amount = position_krw / price
                         execution_quality += "\n⚠️ 지정가→시장가 폴백"
@@ -598,6 +605,22 @@ class TradingBot:
                             f"❗ 오류: {error_msg}"
                         )
                         return False
+
+                    # UUID 확인 (주문 생성 여부)
+                    if 'uuid' not in result:
+                        self.log(f"❌ 시장가 매수 실패: UUID 없음, 응답={result}")
+                        self.telegram.send_message(
+                            f"❌ <b>매수 실패</b>\n"
+                            f"{'='*30}\n\n"
+                            f"🪙 {target_market}\n"
+                            f"💵 시도 금액: {position_krw:,.0f}원\n"
+                            f"❗ 오류: 주문이 생성되지 않음"
+                        )
+                        return False
+
+                    # 주문 정보 로깅
+                    self.log(f"✅ 시장가 주문 생성: UUID={result.get('uuid')}, "
+                            f"시도금액={position_krw:,.0f}원")
 
                     executed_price = price
                     amount = position_krw / price
