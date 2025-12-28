@@ -873,8 +873,10 @@ class TradingBot:
             self.consecutive_losses = 0
             self.log("📅 일일 손익 리셋")
 
-        # 손익 업데이트
-        profit_rate = profit / 1000000  # 100만원 기준 손익률
+        # 손익 업데이트 (전체 자산 대비 비율)
+        status = self.get_current_status()
+        total_asset = status['total']
+        profit_rate = profit / total_asset if total_asset > 0 else 0
         self.daily_pnl += profit_rate
 
         # 연속 손실 추적
