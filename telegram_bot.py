@@ -6,7 +6,7 @@ from upbit_api import UpbitAPI
 from trading_indicators import TechnicalIndicators
 from advanced_strategy import AdvancedIndicators
 from market_scanner import MarketScanner
-from advanced_features import VolatilityManager, TimeBasedStrategy, AdvancedRiskManager
+from advanced_features import TimeBasedStrategy, AdvancedRiskManager
 from database_manager import DatabaseManager
 from market_regime import MarketRegimeDetector  # Tier 3 개선
 from execution_manager import ExecutionManager  # Phase 1: 주문 실행 최적화
@@ -426,18 +426,16 @@ class TradingBot:
             session = TimeBasedStrategy.get_trading_session()
             self.log(f"⏰ {session['name']} (공격성: {session['aggression']}, 변동성: {session['volatility']})")
 
-            # === 변동성 기반 포지션 사이징 ===
-            # 1시간봉으로 ATR 계산
-            candles_1h = self.upbit.get_candles(self.market, "minutes", 60, 30)
-            atr = VolatilityManager.calculate_atr(candles_1h, 14) if candles_1h else None
-
-            # 포지션 크기 결정
-            position_krw = VolatilityManager.get_position_size(krw, price, atr)
+            # === 포지션 사이징 (스캘핑용 고정 비율) ===
+            # 스캘핑: 빠른 회전을 위해 70% 고정
+            position_ratio = 0.7
 
             # 거래 기록 기반 포지션 비율 조정
             if len(self.trade_history) >= 10:
                 optimal_ratio = AdvancedRiskManager.get_optimal_position_ratio(self.trade_history)
-                position_krw = int(krw * optimal_ratio)
+                position_ratio = min(optimal_ratio, 0.8)  # 최대 80%
+
+            position_krw = int(krw * position_ratio)
 
             # 최소 금액 체크
             if position_krw < 5000:
