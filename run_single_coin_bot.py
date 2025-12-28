@@ -126,24 +126,24 @@ class SingleCoinBot:
                 'profit_pct': profit_pct
             }
 
-        # 4. 손절 (-0.25%)
-        if profit_pct <= -0.25:
-            return {
-                'reason': f'손절 ({profit_pct:.2f}%)',
-                'profit_pct': profit_pct
-            }
-
-        # 5. 트레일링 스톱 (피크에서 -0.2% 하락)
-        if self.position_peak > 0.3 and (self.position_peak - profit_pct) > 0.2:
+        # 4. 트레일링 스톱 (피크에서 -0.4% 하락) - 익절 우선
+        if self.position_peak > 0.5 and (self.position_peak - profit_pct) > 0.4:
             return {
                 'reason': f'트레일링 스톱 (피크 {self.position_peak:.2f}% → {profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
-        # 6. 시간 초과 강제 청산 (30분)
-        if hold_minutes > 30:
+        # 5. 시간 초과 강제 청산 (60분)
+        if hold_minutes > 60:
             return {
                 'reason': f'시간 초과 ({hold_minutes:.0f}분, {profit_pct:.2f}%)',
+                'profit_pct': profit_pct
+            }
+
+        # 6. 극단적 손절 (-0.8%) - 최후의 수단만
+        if profit_pct <= -0.8:
+            return {
+                'reason': f'극한 손절 ({profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
@@ -211,9 +211,10 @@ class SingleCoinBot:
                         f"수량: {amount:.8f}\\n"
                         f"가격: {executed_price:,.0f}원\\n"
                         f"금액: {invest_krw:,.0f}원\\n\\n"
-                        f"사유: {signal['reason']}\\n"
-                        f"목표: +0.35% / +0.8%\\n"
-                        f"손절: -0.25%"
+                        f"사유: {signal['reason']}\\n\\n"
+                        f"🎯 익절: +0.35% / +0.5% / +0.8%\\n"
+                        f"🛑 손절: -0.8% (극단적 상황)\\n"
+                        f"⏱️  최대: 60분"
                     )
 
                     return True
@@ -294,8 +295,9 @@ class SingleCoinBot:
         self.log("=" * 70)
         self.log(f"📊 스캔 대상: 10개 코인 (10분마다 갱신)")
         self.log(f"💰 포지션: 1개 90% 집중")
-        self.log(f"🎯 익절: 0.35% / 0.8%")
-        self.log(f"🛑 손절: -0.25%")
+        self.log(f"🎯 익절 우선: 0.35% / 0.5% / 0.8%")
+        self.log(f"🛑 손절: -0.8% (극단적 상황만)")
+        self.log(f"⏱️  보유 시간: 최대 60분")
         self.log(f"⏱️  체크: {check_interval}초마다")
         self.log("=" * 70)
 
@@ -362,13 +364,14 @@ if __name__ == "__main__":
 
         # 시작 메시지
         telegram.send_message(
-            "🎯 <b>단일 코인 집중 봇 시작</b>\\n"
+            "🎯 <b>단일 코인 집중 봇 시작 (익절 우선)</b>\\n"
             "━━━━━━━━━━━━━━━━━\\n\\n"
             "📊 10개 코인 실시간 스캔\\n"
-            "💰 최고 기회에 90% 집중\\n"
-            "🎯 익절: 0.35% / 0.8%\\n"
-            "🛑 손절: -0.25%\\n"
-            "⏱️  30초마다 체크"
+            "💰 최고 기회에 90% 집중\\n\\n"
+            "🎯 익절: 0.35% / 0.5% / 0.8%\\n"
+            "🛑 손절: -0.8% (극단적 상황만)\\n"
+            "⏱️  최대 보유: 60분\\n"
+            "🔄 체크: 30초마다"
         )
 
         # 봇 실행
