@@ -108,6 +108,7 @@ class VolatilityScalpingStrategy:
             if last_trade:
                 time_since = (datetime.now() - last_trade['time']).total_seconds()
                 if time_since < self.cooldown_period:
+                    print(f"🔍 스캘핑 쿨다운: {int(time_since)}초/{self.cooldown_period}초")
                     return None
 
             # 캔들 데이터
@@ -125,9 +126,14 @@ class VolatilityScalpingStrategy:
             # 모멘텀 스파이크 감지
             momentum = self.detect_momentum_spike(candles_1m, candles_5m)
             if not momentum:
+                print(f"🔍 스캘핑: 모멘텀 없음")
                 return None
 
             current_price = candles_1m[0]['trade_price']
+
+            # 디버그: 모멘텀 상태 출력
+            print(f"🔍 모멘텀: spike_up={momentum['spike_up']}, spike_down={momentum['spike_down']}, "
+                  f"1m_avg={momentum['change_1m_avg']:.2f}%, 5m={momentum['change_5m']:.2f}%")
 
             # === 매수 기회 (공격적 스캘핑) ===
             if not position:

@@ -1168,6 +1168,10 @@ class TradingBot:
                     self.market, self.upbit, self.position
                 )
 
+                # 디버그: MA 상태 로그
+                if ma_opp is None:
+                    self.log("🔍 MA: 크로스오버 없음")
+
                 if ma_opp:
                     action = ma_opp['action']
                     reason = ma_opp['reason']
@@ -1208,6 +1212,10 @@ class TradingBot:
                 scalping_opp = self.scalping_strategy.check_scalping_opportunity(
                     self.market, self.upbit, self.position
                 )
+
+                # 디버그: 스캘핑 상태 로그
+                if scalping_opp is None:
+                    self.log("🔍 스캘핑: 기회 없음")
 
                 if scalping_opp:
                     action = scalping_opp['action']
