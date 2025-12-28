@@ -1,0 +1,27 @@
+{
+  "optimized_at": "2025-12-28T15:21:06.451831",
+  "best_params": {
+    "spike_up_threshold": 4,
+    "spike_down_threshold": 4,
+    "strong_change_threshold": 0.7,
+    "avg_change_buy_threshold": 0.3,
+    "change_5m_threshold": 1.0,
+    "target_profit_1": 1.0,
+    "target_profit_2": 1.0,
+    "target_profit_3": 0.7,
+    "stop_loss": -0.5
+  },
+  "score": -1.2256267409470771,
+  "results": {
+    "KRW-ETH": {
+      "total_trades": 1,
+      "win_rate": 0.0,
+      "total_return": -0.5106778087279527,
+      "sharpe_ratio": -0.510677808727948,
+      "max_drawdown": 0.5106778087279527,
+      "avg_profit_per_trade": -5106.77808727948,
+      "final_capital": 994893.2219127205,
+      "market": "KRW-ETH"
+    }
+  }
+}

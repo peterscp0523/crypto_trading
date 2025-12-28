@@ -74,7 +74,7 @@ jobs:
               -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
               -e MARKET="${{ secrets.MARKET }}" \
               -e CHECK_INTERVAL="${{ secrets.CHECK_INTERVAL }}" \
-              -e ENABLE_MULTI_COIN="true" \
+              -e ENABLE_MULTI_COIN="false" \
               -e USE_ORACLE_DB="${{ secrets.USE_ORACLE_DB }}" \
               -e ORACLE_DB_USER="${{ secrets.ORACLE_DB_USER }}" \
               -e ORACLE_DB_PASSWORD="${{ secrets.ORACLE_DB_PASSWORD }}" \
