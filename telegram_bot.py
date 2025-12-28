@@ -11,6 +11,7 @@ from database_manager import DatabaseManager
 from market_regime import MarketRegimeDetector  # Tier 3 개선
 from execution_manager import ExecutionManager  # Phase 1: 주문 실행 최적화
 from risk_manager import RiskManager  # Phase 1: VaR 리스크 관리
+from volatility_strategy import VolatilityScalpingStrategy  # 변동성 스캘핑
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -117,6 +118,10 @@ class TradingBot:
         self.risk_manager = RiskManager(upbit)
         self.enable_limit_orders = True  # 지정가 주문 활성화
         self.limit_order_strategy = 'mid'  # 'best', 'mid', 'aggressive'
+
+        # 변동성 스캘핑 전략 (1순위)
+        self.scalping_strategy = VolatilityScalpingStrategy()
+        self.enable_scalping = True  # 스캘핑 모드 활성화
 
         # 상태
         self.position = None
@@ -967,9 +972,10 @@ class TradingBot:
             return False
 
     def scan_multi_coin_buy_signals(self, top_n=5):
-        """멀티 코인 매수 신호 동시 스캔 (1분봉 최적화)
+        """멀티 코인 매수 신호 동시 스캔 (스캘핑 우선)
 
-        TOP 5 모멘텀 코인을 동시에 체크하여 가장 강한 매수 신호를 찾음
+        1순위: 스캘핑 기회
+        2순위: 기술적 신호
         """
         try:
             # 모멘텀 랭킹 가져오기 (2분마다 갱신)
@@ -980,33 +986,58 @@ class TradingBot:
             if not self.market_scanner.cached_rankings:
                 return None
 
-            # TOP N 코인의 매수 신호 체크
+            # TOP N 코인 체크
             best_signal = None
             best_score = 0
 
             for coin in self.market_scanner.cached_rankings[:top_n]:
                 market = coin['market']
 
-                # 현재 마켓 임시 변경하여 신호 체크
+                # === 1순위: 스캘핑 기회 체크 ===
+                if self.enable_scalping:
+                    scalping_opp = self.scalping_strategy.check_scalping_opportunity(
+                        market, self.upbit, None
+                    )
+
+                    if scalping_opp and scalping_opp['action'] == 'buy':
+                        # 스캘핑 점수 = 신뢰도 * 100 + 모멘텀 점수
+                        scalping_score = (scalping_opp['confidence'] * 100) + coin['score']
+
+                        if scalping_score > best_score:
+                            # 임시로 마켓 변경해서 신호 가져오기
+                            original_market = self.market
+                            self.market = market
+                            signals = self.get_multi_timeframe_signals()
+                            self.market = original_market
+
+                            if signals:
+                                best_score = scalping_score
+                                best_signal = {
+                                    'market': market,
+                                    'name': coin['name'],
+                                    'signals': signals,
+                                    'buy_signal_count': 3,  # 스캘핑은 최고 신호로 표시
+                                    'momentum_score': coin['score'],
+                                    'total_score': scalping_score,
+                                    'is_scalping': True,
+                                    'scalping_target': scalping_opp.get('target_profit', 1.5),
+                                    'scalping_stop': scalping_opp.get('stop_loss', -1.0),
+                                    'scalping_reason': scalping_opp['reason']
+                                }
+                                continue  # 스캘핑 발견하면 다음 코인으로
+
+                # === 2순위: 기술적 신호 ===
                 original_market = self.market
                 self.market = market
-
-                # 다중 시간대 신호 분석
                 signals = self.get_multi_timeframe_signals()
-
-                # 마켓 복원
                 self.market = original_market
 
                 if not signals:
                     continue
 
-                # 강한 매수 신호인지 체크
                 buy_signal_count = signals.get('buy_signal_count', 0)
-
-                # 매수 신호 점수: (매수신호 강도 * 10) + 모멘텀 점수
                 signal_score = (buy_signal_count * 10) + coin['score']
 
-                # 최소 1개 이상 시간대에서 매수 신호 필요 (2개 → 1개로 완화)
                 if buy_signal_count >= 1 and signal_score > best_score:
                     best_score = signal_score
                     best_signal = {
@@ -1015,11 +1046,16 @@ class TradingBot:
                         'signals': signals,
                         'buy_signal_count': buy_signal_count,
                         'momentum_score': coin['score'],
-                        'total_score': signal_score
+                        'total_score': signal_score,
+                        'is_scalping': False
                     }
 
             if best_signal:
-                self.log(f"🎯 최강 매수 신호: {best_signal['name']} (신호: {best_signal['buy_signal_count']}/3, 모멘텀: {best_signal['momentum_score']})")
+                if best_signal.get('is_scalping'):
+                    self.log(f"⚡ 최강 스캘핑: {best_signal['name']} (신뢰도: {best_signal['total_score']:.0f})")
+                    self.log(f"   사유: {best_signal['scalping_reason']}")
+                else:
+                    self.log(f"🎯 최강 매수 신호: {best_signal['name']} (신호: {best_signal['buy_signal_count']}/3, 모멘텀: {best_signal['momentum_score']})")
 
             return best_signal
 
@@ -1120,7 +1156,43 @@ class TradingBot:
 
             status = self.get_current_status()
 
-            # 멀티 코인 모드: 포지션 없을 때 TOP 5 코인 동시 매수 신호 체크
+            # === 1순위: 변동성 스캘핑 체크 (약세장에서도 작동) ===
+            if self.enable_scalping:
+                scalping_opp = self.scalping_strategy.check_scalping_opportunity(
+                    self.market, self.upbit, self.position
+                )
+
+                if scalping_opp:
+                    action = scalping_opp['action']
+                    reason = scalping_opp['reason']
+                    confidence = scalping_opp['confidence'] * 100
+
+                    self.log(f"⚡ 스캘핑 기회: {action.upper()}")
+                    self.log(f"   사유: {reason}")
+                    self.log(f"   신뢰도: {confidence:.0f}%")
+
+                    if action == 'buy' and not self.position:
+                        # 스캘핑 매수
+                        signals = self.get_multi_timeframe_signals()
+                        if signals:
+                            # 포지션에 스캘핑 목표값 저장
+                            self.buy(status, signals)
+                            if self.position:
+                                self.position['target_profit'] = scalping_opp.get('target_profit', 1.5)
+                                self.position['stop_loss'] = scalping_opp.get('stop_loss', -1.0)
+                                self.position['is_scalping'] = True
+                                self.scalping_strategy.record_trade(self.market, 'buy', signals['price'])
+                        return
+
+                    elif action == 'sell' and self.position:
+                        # 스캘핑 매도
+                        signals = self.get_multi_timeframe_signals()
+                        if signals:
+                            self.sell(status, signals, reason)
+                            self.scalping_strategy.record_trade(self.market, 'sell', signals['price'])
+                        return
+
+            # === 2순위: 멀티 코인 모드 (기존 로직) ===
             if self.enable_multi_coin and not self.position and self.market_scanner:
                 best_buy_signal = self.scan_multi_coin_buy_signals()
 
@@ -1133,9 +1205,17 @@ class TradingBot:
                 if best_buy_signal:
                     # 가장 강한 매수 신호가 나온 코인으로 즉시 전환
                     if best_buy_signal['market'] != self.market:
-                        self.log(f"💱 즉시 전환: {self.market.replace('KRW-', '')} → {best_buy_signal['name']} (매수신호 강도: {best_buy_signal['buy_signal_count']}/3)")
+                        signal_type = "스캘핑" if best_buy_signal.get('is_scalping') else f"매수신호 {best_buy_signal['buy_signal_count']}/3"
+                        self.log(f"💱 즉시 전환: {self.market.replace('KRW-', '')} → {best_buy_signal['name']} ({signal_type})")
                         self.market = best_buy_signal['market']
+
                     signals = best_buy_signal['signals']
+
+                    # 스캘핑 정보 저장
+                    if best_buy_signal.get('is_scalping'):
+                        signals['is_scalping'] = True
+                        signals['scalping_target'] = best_buy_signal.get('scalping_target')
+                        signals['scalping_stop'] = best_buy_signal.get('scalping_stop')
                 else:
                     # 매수 신호 없으면 기존 로직 (코인 전환 검토)
                     self.check_multi_coin_switch()
