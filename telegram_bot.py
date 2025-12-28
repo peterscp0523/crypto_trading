@@ -559,18 +559,29 @@ class TradingBot:
                         amount = order_result['volume']
                         execution_quality += f"\n✅ 지정가 체결 ({order_result.get('execution_time', 0):.1f}초)"
                     else:
-                        # 지정가 실패 - 오류 로깅
+                        # 지정가 실패 - 시장가로 폴백
                         error_msg = order_result.get('error', '지정가 체결 실패')
-                        self.log(f"⚠️ 지정가 실패: {error_msg}, 시장가로 전환 안 함")
-                        self.telegram.send_message(
-                            f"⚠️ <b>매수 실패</b>\n"
-                            f"{'='*30}\n\n"
-                            f"🪙 {target_market}\n"
-                            f"💵 시도 금액: {position_krw:,.0f}원\n"
-                            f"❗ 오류: {error_msg}\n"
-                            f"📌 지정가 주문이 체결되지 않았습니다"
-                        )
-                        return False
+                        self.log(f"⚠️ 지정가 실패: {error_msg}, 시장가로 폴백")
+
+                        # 시장가 주문으로 전환
+                        result = self.upbit.order_market_buy(target_market, position_krw)
+
+                        # 시장가 주문 결과 확인
+                        if not result or 'error' in result:
+                            error_msg = result.get('error', {}).get('message', '알 수 없는 오류') if result else 'API 응답 없음'
+                            self.log(f"❌ 시장가 매수 실패: {error_msg}")
+                            self.telegram.send_message(
+                                f"❌ <b>매수 실패</b>\n"
+                                f"{'='*30}\n\n"
+                                f"🪙 {target_market}\n"
+                                f"💵 시도 금액: {position_krw:,.0f}원\n"
+                                f"❗ 오류: {error_msg}"
+                            )
+                            return False
+
+                        executed_price = price
+                        amount = position_krw / price
+                        execution_quality += "\n⚠️ 지정가→시장가 폴백"
                 else:
                     # 시장가 주문
                     result = self.upbit.order_market_buy(target_market, position_krw)
