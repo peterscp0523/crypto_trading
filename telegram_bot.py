@@ -1209,13 +1209,17 @@ class TradingBot:
                         return
 
                     elif action == 'sell' and self.position:
-                        # MA 크로스오버 매도
-                        signals = self.get_multi_timeframe_signals()
-                        if not signals:
-                            signals = {'price': status['current_price']}
+                        # MA 크로스오버 매도 (스캘핑 포지션은 제외)
+                        if self.position.get('is_scalping'):
+                            self.log("⚠️ 스캘핑 포지션 - MA 매도 무시")
+                            # 스캘핑은 스캘핑 조건으로만 매도
+                        else:
+                            signals = self.get_multi_timeframe_signals()
+                            if not signals:
+                                signals = {'price': status['current_price']}
 
-                        self.sell(status, signals, reason)
-                        return
+                            self.sell(status, signals, reason)
+                            return
 
             # === 2순위: 변동성 스캘핑 체크 (약세장에서도 작동) ===
             if self.enable_scalping:
