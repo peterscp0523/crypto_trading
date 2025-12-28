@@ -14,6 +14,7 @@ from risk_manager import RiskManager  # Phase 1: VaR 리스크 관리
 from volatility_strategy import VolatilityScalpingStrategy  # 변동성 스캘핑
 from ma_crossover_strategy import MACrossoverStrategy  # MA 크로스오버
 from coin_selector import CoinSelector  # 거래량 기반 코인 선택
+from bear_market_strategy import BearMarketStrategy, StableCoinHedging  # 하락장 대응
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -132,6 +133,11 @@ class TradingBot:
         # 2순위: 변동성 스캘핑
         self.scalping_strategy = VolatilityScalpingStrategy()
         self.enable_scalping = True
+
+        # 3순위: 하락장 대응
+        self.bear_strategy = BearMarketStrategy()
+        self.hedge_strategy = StableCoinHedging(upbit)
+        self.enable_bear_strategy = True
 
         # 상태 (멀티 코인 지원)
         self.positions = {}  # {market: {buy_price, buy_time, amount, ...}}
@@ -1231,7 +1237,44 @@ class TradingBot:
             for coin in self.market_scanner.cached_rankings[:top_n]:
                 market = coin['market']
 
-                # === 1순위: 스캘핑 기회 체크 ===
+                # === 0순위: 하락장 회피 체크 ===
+                if self.enable_bear_strategy:
+                    # 극단적 하락장 감지 시 매수 금지
+                    if self.bear_strategy.should_avoid_trading(market, self.upbit):
+                        continue  # 이 코인은 스킵
+
+                # === 1순위: 하락장 반등 기회 ===
+                if self.enable_bear_strategy:
+                    bear_opp = self.bear_strategy.find_bounce_opportunity(market, self.upbit)
+
+                    if bear_opp and bear_opp['action'] == 'buy':
+                        # 하락장 반등 점수 = 신뢰도 * 120 (우선순위 최상)
+                        bear_score = (bear_opp['confidence'] * 120) + coin['score']
+
+                        if bear_score > best_score:
+                            original_market = self.market
+                            self.market = market
+                            signals = self.get_multi_timeframe_signals()
+                            self.market = original_market
+
+                            if signals:
+                                best_score = bear_score
+                                best_signal = {
+                                    'market': market,
+                                    'name': coin['name'],
+                                    'signals': signals,
+                                    'buy_signal_count': 3,
+                                    'momentum_score': coin['score'],
+                                    'total_score': bear_score,
+                                    'is_scalping': True,
+                                    'scalping_target': bear_opp.get('target_profit', 1.5),
+                                    'scalping_stop': bear_opp.get('stop_loss', -0.5),
+                                    'scalping_reason': bear_opp['reason'],
+                                    'strategy': 'bear_bounce'
+                                }
+                                continue  # 하락장 반등 찾았으면 다른 전략 체크 안함
+
+                # === 2순위: 스캘핑 기회 체크 ===
                 if self.enable_scalping:
                     scalping_opp = self.scalping_strategy.check_scalping_opportunity(
                         market, self.upbit, None
