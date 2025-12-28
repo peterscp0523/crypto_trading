@@ -1172,24 +1172,29 @@ class TradingBot:
                     self.log(f"   신뢰도: {confidence:.0f}%")
 
                     if action == 'buy' and not self.position:
-                        # 스캘핑 매수
+                        # 스캘핑 매수 (독립 실행 - RSI/볼린저 신호 무시)
                         signals = self.get_multi_timeframe_signals()
-                        if signals:
-                            # 포지션에 스캘핑 목표값 저장
-                            self.buy(status, signals)
-                            if self.position:
-                                self.position['target_profit'] = scalping_opp.get('target_profit', 1.5)
-                                self.position['stop_loss'] = scalping_opp.get('stop_loss', -1.0)
-                                self.position['is_scalping'] = True
-                                self.scalping_strategy.record_trade(self.market, 'buy', signals['price'])
+                        if not signals:
+                            # signals가 없어도 스캘핑은 실행
+                            self.log("⚠️ 기술적 신호 없지만 스캘핑 강제 매수")
+                            signals = {'price': status['current_price']}
+
+                        self.buy(status, signals)
+                        if self.position:
+                            self.position['target_profit'] = scalping_opp.get('target_profit', 1.5)
+                            self.position['stop_loss'] = scalping_opp.get('stop_loss', -1.0)
+                            self.position['is_scalping'] = True
+                            self.scalping_strategy.record_trade(self.market, 'buy', signals['price'])
                         return
 
                     elif action == 'sell' and self.position:
-                        # 스캘핑 매도
+                        # 스캘핑 매도 (독립 실행)
                         signals = self.get_multi_timeframe_signals()
-                        if signals:
-                            self.sell(status, signals, reason)
-                            self.scalping_strategy.record_trade(self.market, 'sell', signals['price'])
+                        if not signals:
+                            signals = {'price': status['current_price']}
+
+                        self.sell(status, signals, reason)
+                        self.scalping_strategy.record_trade(self.market, 'sell', signals['price'])
                         return
 
             # === 2순위: 멀티 코인 모드 (기존 로직) ===

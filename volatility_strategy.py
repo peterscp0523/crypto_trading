@@ -124,32 +124,52 @@ class VolatilityScalpingStrategy:
 
             current_price = candles_1m[0]['trade_price']
 
-            # === 매수 기회 ===
+            # === 매수 기회 (공격적 스캘핑) ===
             if not position:
-                # 조건 1: 높은 변동성 + 급락 후 반등 조짐
-                if (volatility['is_high'] and
-                    momentum['spike_down'] and
-                    momentum['change_1m_avg'] > -0.3):  # 하락 둔화
-
+                # 조건 1: 급락 후 반등 (가장 일반적인 스캘핑 패턴)
+                # - 최근 1분봉 3개 이상 하락 후 상승 전환
+                if (momentum['spike_down'] and momentum['change_1m_avg'] > -0.5):
                     return {
                         'action': 'buy',
-                        'reason': '급락 후 반등 조짐 (변동성 스캘핑)',
-                        'confidence': 0.7 if volatility['is_very_high'] else 0.6,
-                        'target_profit': volatility['volatility_pct'] * 0.8,  # ATR의 80%
-                        'stop_loss': -volatility['volatility_pct'] * 0.5  # ATR의 50%
+                        'reason': '급락 후 반등 진입',
+                        'confidence': 0.7 if volatility['is_high'] else 0.6,
+                        'target_profit': 1.2,  # 1.2% 목표
+                        'stop_loss': -0.8  # -0.8% 손절
                     }
 
-                # 조건 2: 매우 높은 변동성 + 강한 상승 모멘텀
-                if (volatility['is_very_high'] and
-                    momentum['spike_up'] and
-                    momentum['strong_momentum']):
-
+                # 조건 2: 상승 모멘텀 추세추종
+                # - 2개 이상 연속 상승 (조건 완화)
+                if momentum['spike_up']:
                     return {
                         'action': 'buy',
-                        'reason': '강한 상승 모멘텀 추세추종',
+                        'reason': '상승 모멘텀 추세추종',
                         'confidence': 0.75,
-                        'target_profit': 2.0,  # 2% 목표
-                        'stop_loss': -1.0  # -1% 손절
+                        'target_profit': 1.5,  # 1.5% 목표
+                        'stop_loss': -0.8  # -0.8% 손절
+                    }
+
+                # 조건 3: 단순 변동성 매수 (가장 공격적)
+                # - 1분 평균 변화율이 양수이고 5분 변화율도 양수
+                if (momentum['change_1m_avg'] > 0.2 and
+                    momentum['change_5m'] > 0.5):
+                    return {
+                        'action': 'buy',
+                        'reason': '양봉 변동성 매수',
+                        'confidence': 0.65,
+                        'target_profit': 1.0,  # 1.0% 목표
+                        'stop_loss': -0.7  # -0.7% 손절
+                    }
+
+                # 조건 4: 반대 방향 전환 포착
+                # - 5분봉 하락 중 1분봉 반등
+                if (momentum['change_5m'] < -0.5 and
+                    momentum['change_1m_avg'] > 0.3):
+                    return {
+                        'action': 'buy',
+                        'reason': '하락 중 반등 포착',
+                        'confidence': 0.7,
+                        'target_profit': 1.3,  # 1.3% 목표
+                        'stop_loss': -0.8  # -0.8% 손절
                     }
 
             # === 매도 기회 (포지션 있을 때) ===
