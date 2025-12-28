@@ -648,21 +648,22 @@ class TradingBot:
                 msg += f"  • 4H: {'🔼' if trend['trend_4h'] == 'up' else '🔽'} RSI {trend['rsi_4h']:.1f}"
                 msg += f" (MA20: {trend['ma20_4h']:,.0f})\n\n"
 
-            # 기술적 지표
-            msg += f"📊 <b>기술적 지표</b>\n"
-            msg += f"  • RSI(15m): {signals['rsi']:.1f}"
-            msg += f" ({'과매도' if signals['rsi'] < 30 else '중립' if signals['rsi'] < 70 else '과매수'})\n"
-            msg += f"  • 볼린저밴드: {signals['bb_pos']:.1f}%"
-            msg += f" ({'하단' if signals['bb_pos'] < 20 else '중간' if signals['bb_pos'] < 80 else '상단'})\n"
-            msg += f"  • 거래량: {signals['vol_ratio']:.2f}x"
-            msg += f" (기준: {signals.get('vol_threshold', 1.2):.2f}x)"
-            if signals.get('volume_ok'):
-                msg += " ✅\n"
-            else:
-                msg += " ⚠️\n"
-            msg += f"  • 가격: {price:,.0f}원\n"
-            msg += f"  • 상한: {signals['upper']:,.0f}원 (+{((signals['upper']-price)/price)*100:.1f}%)\n"
-            msg += f"  • 하한: {signals['lower']:,.0f}원 ({((signals['lower']-price)/price)*100:.1f}%)\n\n"
+            # 기술적 지표 (전체 시그널이 있을 때만)
+            if 'bb_pos' in signals and 'vol_ratio' in signals:
+                msg += f"📊 <b>기술적 지표</b>\n"
+                msg += f"  • RSI(15m): {signals['rsi']:.1f}"
+                msg += f" ({'과매도' if signals['rsi'] < 30 else '중립' if signals['rsi'] < 70 else '과매수'})\n"
+                msg += f"  • 볼린저밴드: {signals['bb_pos']:.1f}%"
+                msg += f" ({'하단' if signals['bb_pos'] < 20 else '중간' if signals['bb_pos'] < 80 else '상단'})\n"
+                msg += f"  • 거래량: {signals['vol_ratio']:.2f}x"
+                msg += f" (기준: {signals.get('vol_threshold', 1.2):.2f}x)"
+                if signals.get('volume_ok'):
+                    msg += " ✅\n"
+                else:
+                    msg += " ⚠️\n"
+                msg += f"  • 가격: {price:,.0f}원\n"
+                msg += f"  • 상한: {signals['upper']:,.0f}원 (+{((signals['upper']-price)/price)*100:.1f}%)\n"
+                msg += f"  • 하한: {signals['lower']:,.0f}원 ({((signals['lower']-price)/price)*100:.1f}%)\n\n"
 
             # 익절 목표 (부분 익절 포함)
             msg += f"🎯 <b>익절 목표</b> (부분 익절 전략)\n"
