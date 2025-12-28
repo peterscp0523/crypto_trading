@@ -20,6 +20,7 @@ class SimpleTelegramBot:
         self.token = token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
+        self.last_update_id = 0
 
     def send_message(self, text):
         """메시지 전송"""
@@ -32,6 +33,34 @@ class SimpleTelegramBot:
         except Exception as e:
             print(f"텔레그램 전송 실패: {e}")
             return None
+
+    def get_updates(self):
+        """새 메시지 확인"""
+        try:
+            import requests
+            url = f"{self.base_url}/getUpdates"
+            params = {"offset": self.last_update_id + 1, "timeout": 1}
+            response = requests.get(url, params=params, timeout=3)
+            result = response.json()
+
+            if result.get("ok") and result.get("result"):
+                updates = result["result"]
+                if updates:
+                    self.last_update_id = updates[-1]["update_id"]
+                    return updates
+            return []
+        except Exception as e:
+            # print(f"텔레그램 업데이트 확인 실패: {e}")
+            return []
+
+    def check_command(self):
+        """명령어 체크"""
+        updates = self.get_updates()
+        for update in updates:
+            if "message" in update and "text" in update["message"]:
+                text = update["message"]["text"].strip().lower()
+                return text
+        return None
 
 
 class SingleCoinBot:
@@ -105,45 +134,40 @@ class SingleCoinBot:
         if profit_pct > self.position_peak:
             self.position_peak = profit_pct
 
-        # 1. 목표 수익 달성 (0.8%)
-        if profit_pct >= 0.8:
+        # === 보수적 전략: 확실한 수익만 거래 ===
+
+        # 1. 높은 목표 수익 달성 (1.5%)
+        if profit_pct >= 1.5:
             return {
                 'reason': f'목표 달성 ({profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
-        # 2. 빠른 익절 (0.5%, 10분 내)
-        if hold_minutes < 10 and profit_pct >= 0.5:
-            return {
-                'reason': f'빠른 익절 ({hold_minutes:.0f}분, {profit_pct:.2f}%)',
-                'profit_pct': profit_pct
-            }
-
-        # 3. 기본 익절 (0.35%)
-        if profit_pct >= 0.35:
+        # 2. 기본 목표 수익 (0.8%)
+        if profit_pct >= 0.8:
             return {
                 'reason': f'익절 ({profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
-        # 4. 트레일링 스톱 (피크에서 -0.4% 하락) - 익절 우선
-        if self.position_peak > 0.5 and (self.position_peak - profit_pct) > 0.4:
+        # 3. 트레일링 스톱 (1% 이상 수익 시, 피크에서 -0.3% 하락)
+        if self.position_peak >= 1.0 and (self.position_peak - profit_pct) >= 0.3:
             return {
                 'reason': f'트레일링 스톱 (피크 {self.position_peak:.2f}% → {profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
-        # 5. 시간 초과 강제 청산 (60분)
-        if hold_minutes > 60:
+        # 4. 시간 초과 강제 청산 (120분 = 2시간)
+        if hold_minutes > 120:
             return {
                 'reason': f'시간 초과 ({hold_minutes:.0f}분, {profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
-        # 6. 극단적 손절 (-0.8%) - 최후의 수단만
-        if profit_pct <= -0.8:
+        # 5. 손절 (-0.5%) - 명확한 손실 차단
+        if profit_pct <= -0.5:
             return {
-                'reason': f'극한 손절 ({profit_pct:.2f}%)',
+                'reason': f'손절 ({profit_pct:.2f}%)',
                 'profit_pct': profit_pct
             }
 
@@ -212,9 +236,9 @@ class SingleCoinBot:
                         f"가격: {executed_price:,.0f}원\\n"
                         f"금액: {invest_krw:,.0f}원\\n\\n"
                         f"사유: {signal['reason']}\\n\\n"
-                        f"🎯 익절: +0.35% / +0.5% / +0.8%\\n"
-                        f"🛑 손절: -0.8% (극단적 상황)\\n"
-                        f"⏱️  최대: 60분"
+                        f"🎯 목표: +0.8% / +1.5% (보수적)\\n"
+                        f"🛑 손절: -0.5%\\n"
+                        f"⏱️  최대: 120분"
                     )
 
                     return True
@@ -295,14 +319,69 @@ class SingleCoinBot:
         self.log("=" * 70)
         self.log(f"📊 스캔 대상: 10개 코인 (10분마다 갱신)")
         self.log(f"💰 포지션: 1개 90% 집중")
-        self.log(f"🎯 익절 우선: 0.35% / 0.5% / 0.8%")
-        self.log(f"🛑 손절: -0.8% (극단적 상황만)")
-        self.log(f"⏱️  보유 시간: 최대 60분")
+        self.log(f"🎯 보수적 전략: 0.8% / 1.5% 이상만 거래")
+        self.log(f"🛑 손절: -0.5% (명확한 손실 차단)")
+        self.log(f"⏱️  보유 시간: 최대 120분 (충분한 대기)")
         self.log(f"⏱️  체크: {check_interval}초마다")
         self.log("=" * 70)
 
         while True:
             try:
+                # === 텔레그램 명령어 체크 ===
+                command = self.telegram.check_command()
+                if command:
+                    if command == '/stop' or command == '/멈춰' or command == '멈춰':
+                        self.log("🛑 텔레그램 명령: 봇 중지")
+                        self.telegram.send_message(
+                            "🛑 <b>봇 중지 명령 수신</b>\\n\\n"
+                            "봇을 안전하게 종료합니다."
+                        )
+                        break
+                    elif command == '/status' or command == '/상태':
+                        krw, holdings = self.get_balance()
+                        if self.position:
+                            market = self.position['market']
+                            buy_price = self.position['buy_price']
+                            ticker = self.upbit.get_current_price(market)
+                            current_price = ticker['trade_price']
+                            profit_pct = ((current_price - buy_price) / buy_price) * 100
+                            from datetime import datetime
+                            hold_minutes = (datetime.now() - self.position['buy_time']).total_seconds() / 60
+
+                            self.telegram.send_message(
+                                f"📊 <b>봇 상태</b>\\n"
+                                f"━━━━━━━━━━━━━━━━━\\n\\n"
+                                f"💰 잔고: {krw:,.0f}원\\n"
+                                f"📈 포지션: {market}\\n"
+                                f"   매수가: {buy_price:,.0f}원\\n"
+                                f"   현재가: {current_price:,.0f}원\\n"
+                                f"   수익률: {profit_pct:+.2f}%\\n"
+                                f"   보유시간: {hold_minutes:.0f}분\\n\\n"
+                                f"📊 통계:\\n"
+                                f"   총 거래: {self.total_trades}회\\n"
+                                f"   승률: {(self.winning_trades/self.total_trades*100) if self.total_trades > 0 else 0:.1f}%\\n"
+                                f"   총 손익: {self.total_pnl:+,.0f}원"
+                            )
+                        else:
+                            self.telegram.send_message(
+                                f"📊 <b>봇 상태</b>\\n"
+                                f"━━━━━━━━━━━━━━━━━\\n\\n"
+                                f"💰 잔고: {krw:,.0f}원\\n"
+                                f"📈 포지션: 없음 (기회 탐색 중)\\n\\n"
+                                f"📊 통계:\\n"
+                                f"   총 거래: {self.total_trades}회\\n"
+                                f"   승률: {(self.winning_trades/self.total_trades*100) if self.total_trades > 0 else 0:.1f}%\\n"
+                                f"   총 손익: {self.total_pnl:+,.0f}원"
+                            )
+                    elif command == '/help' or command == '/도움말':
+                        self.telegram.send_message(
+                            "🤖 <b>봇 명령어</b>\\n"
+                            "━━━━━━━━━━━━━━━━━\\n\\n"
+                            "/stop 또는 /멈춰 - 봇 중지\\n"
+                            "/status 또는 /상태 - 현재 상태 확인\\n"
+                            "/help 또는 /도움말 - 명령어 도움말"
+                        )
+
                 # 포지션 있으면 매도 체크
                 if self.position:
                     market = self.position['market']
@@ -364,19 +443,20 @@ if __name__ == "__main__":
 
         # 시작 메시지
         telegram.send_message(
-            "🎯 <b>단일 코인 집중 봇 시작 (익절 우선)</b>\\n"
+            "🛡️ <b>보수적 트레이딩 봇 시작</b>\\n"
             "━━━━━━━━━━━━━━━━━\\n\\n"
-            "📊 10개 코인 실시간 스캔\\n"
-            "💰 최고 기회에 90% 집중\\n\\n"
-            "🎯 익절: 0.35% / 0.5% / 0.8%\\n"
-            "🛑 손절: -0.8% (극단적 상황만)\\n"
-            "⏱️  최대 보유: 60분\\n"
-            "🔄 체크: 30초마다"
+            "📊 엄격한 기술적 분석 (60점+ 이상)\\n"
+            "💰 확실한 기회에만 90% 투자\\n\\n"
+            "🎯 목표: 0.8% ~ 1.5% (보수적)\\n"
+            "🛑 손절: -0.5% (명확한 차단)\\n"
+            "⏱️  최대 보유: 120분\\n"
+            "🔄 체크: 60초마다\\n\\n"
+            "💡 거래 빈도 감소 → 수수료 절감"
         )
 
         # 봇 실행
         bot = SingleCoinBot(upbit, telegram, db)
-        bot.run(check_interval=30)
+        bot.run(check_interval=60)  # 60초마다 체크 (보수적)
 
     except KeyboardInterrupt:
         print("\n봇 종료됨")

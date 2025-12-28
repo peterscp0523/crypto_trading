@@ -216,8 +216,8 @@ class DynamicCoinScanner:
                 # === 기술적 지표 점수 ===
                 technical_score = self._calculate_technical_score(market)
 
-                # 필터 3: 기술적 점수 0.4 이상 (40점 이상)
-                if technical_score < 0.4:
+                # 필터 3: 기술적 점수 0.6 이상 (60점 이상) - 보수적 전략
+                if technical_score < 0.6:
                     continue
 
                 # 필터 4: 가격 50만원 이하 우선
