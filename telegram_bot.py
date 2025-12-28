@@ -12,6 +12,7 @@ from market_regime import MarketRegimeDetector  # Tier 3 개선
 from execution_manager import ExecutionManager  # Phase 1: 주문 실행 최적화
 from risk_manager import RiskManager  # Phase 1: VaR 리스크 관리
 from volatility_strategy import VolatilityScalpingStrategy  # 변동성 스캘핑
+from ma_crossover_strategy import MACrossoverStrategy  # MA 크로스오버
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -119,9 +120,14 @@ class TradingBot:
         self.enable_limit_orders = True  # 지정가 주문 활성화
         self.limit_order_strategy = 'mid'  # 'best', 'mid', 'aggressive'
 
-        # 변동성 스캘핑 전략 (1순위)
+        # 전략 우선순위 (위에서 아래 순서)
+        # 1순위: MA 크로스오버 (가장 신뢰도 높음)
+        self.ma_strategy = MACrossoverStrategy(fast_period=7, slow_period=25)
+        self.enable_ma_crossover = True
+
+        # 2순위: 변동성 스캘핑
         self.scalping_strategy = VolatilityScalpingStrategy()
-        self.enable_scalping = True  # 스캘핑 모드 활성화
+        self.enable_scalping = True
 
         # 상태
         self.position = None
@@ -1156,7 +1162,48 @@ class TradingBot:
 
             status = self.get_current_status()
 
-            # === 1순위: 변동성 스캘핑 체크 (약세장에서도 작동) ===
+            # === 1순위: MA 크로스오버 (가장 신뢰도 높음) ===
+            if self.enable_ma_crossover:
+                ma_opp = self.ma_strategy.check_trading_opportunity(
+                    self.market, self.upbit, self.position
+                )
+
+                if ma_opp:
+                    action = ma_opp['action']
+                    reason = ma_opp['reason']
+                    confidence = ma_opp['confidence'] * 100
+                    fast_ma = ma_opp['fast_ma']
+                    slow_ma = ma_opp['slow_ma']
+
+                    self.log(f"📈 MA 크로스오버: {action.upper()}")
+                    self.log(f"   사유: {reason}")
+                    self.log(f"   신뢰도: {confidence:.0f}%")
+                    self.log(f"   MA7: {fast_ma:,.0f}원 / MA25: {slow_ma:,.0f}원")
+
+                    if action == 'buy' and not self.position:
+                        # MA 크로스오버 매수
+                        signals = self.get_multi_timeframe_signals()
+                        if not signals:
+                            self.log("⚠️ 기술적 신호 없지만 MA 크로스오버 매수")
+                            signals = {'price': status['current_price']}
+
+                        self.buy(status, signals)
+                        if self.position:
+                            self.position['target_profit'] = ma_opp.get('target_profit', 2.0)
+                            self.position['stop_loss'] = ma_opp.get('stop_loss', -1.0)
+                            self.position['is_ma_crossover'] = True
+                        return
+
+                    elif action == 'sell' and self.position:
+                        # MA 크로스오버 매도
+                        signals = self.get_multi_timeframe_signals()
+                        if not signals:
+                            signals = {'price': status['current_price']}
+
+                        self.sell(status, signals, reason)
+                        return
+
+            # === 2순위: 변동성 스캘핑 체크 (약세장에서도 작동) ===
             if self.enable_scalping:
                 scalping_opp = self.scalping_strategy.check_scalping_opportunity(
                     self.market, self.upbit, self.position
@@ -1197,7 +1244,7 @@ class TradingBot:
                         self.scalping_strategy.record_trade(self.market, 'sell', signals['price'])
                         return
 
-            # === 2순위: 멀티 코인 모드 (기존 로직) ===
+            # === 3순위: 멀티 코인 모드 (기존 로직) ===
             if self.enable_multi_coin and not self.position and self.market_scanner:
                 best_buy_signal = self.scan_multi_coin_buy_signals()
 

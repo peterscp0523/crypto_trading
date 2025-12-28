@@ -10,7 +10,7 @@ class VolatilityScalpingStrategy:
 
     def __init__(self):
         self.recent_trades = []  # 최근 거래 기록
-        self.cooldown_period = 300  # 5분 쿨다운
+        self.cooldown_period = 60  # 1분 쿨다운 (30초 체크 간격에 맞춤)
 
     def calculate_volatility(self, candles, period=20):
         """변동성 계산 (ATR 기반)"""
