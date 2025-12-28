@@ -1802,25 +1802,36 @@ class TradingBot:
             # 기존 코인
             if status['coin'] >= 0.001:
                 buy_price = status['avg_price'] if status['avg_price'] > 0 else status['current_price']
-                
+
+                # 레거시 포지션 (하위 호환)
                 self.position = {
                     'buy_price': buy_price,
                     'buy_time': datetime.now(),
                     'amount': status['coin'],
-                    'buy_krw': status['coin'] * buy_price
+                    'buy_krw': status['coin'] * buy_price,
+                    'market': self.market
                 }
-                
+
+                # 멀티 코인 포지션 딕셔너리에도 저장 (중요!)
+                self.positions[self.market] = {
+                    'buy_price': buy_price,
+                    'buy_time': datetime.now(),
+                    'amount': status['coin'],
+                    'buy_krw': status['coin'] * buy_price,
+                    'market': self.market
+                }
+
                 profit_rate = (status['current_price'] - buy_price) / buy_price * 100
-                
+
                 msg = f"💼 <b>기존 포지션</b>\n━━━━━━━━━━━━━━━━━\n\n"
                 msg += f"🪙 {status['coin']:.6f} ETH\n"
                 msg += f"📊 매수가: {buy_price:,.0f}원\n"
                 msg += f"📊 현재가: {status['current_price']:,.0f}원\n"
                 msg += f"💵 수익률: {profit_rate:+.2f}%\n\n"
                 msg += f"✅ 감시 시작!"
-                
+
                 self.telegram.send_message(msg)
-                self.log("✅ 기존 포지션")
+                self.log(f"✅ 기존 포지션 ({self.market})")
             
             else:
                 mode_tag = "🧪 [시뮬레이션 모드]" if self.dry_run else ""
