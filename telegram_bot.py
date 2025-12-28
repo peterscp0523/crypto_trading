@@ -631,7 +631,7 @@ class TradingBot:
                 msg += f"  • 시장 심리: {market_regime['market_sentiment']:.0f}%\n\n"
 
             # 매수 신호 강도 (Tier 2)
-            if signal_strength:
+            if signal_strength and 'multi_timeframe' in signals:
                 msg += f"📶 <b>신호 강도</b>: {signal_strength}\n"
                 msg += f"  • 1분봉: {'✅' if signals['multi_timeframe']['1m']['buy'] else '❌'}\n"
                 msg += f"  • 5분봉: {'✅' if signals['multi_timeframe']['5m']['buy'] else '❌'}\n"
