@@ -67,7 +67,7 @@ class TelegramNotifier:
                 "timeout": 1,
                 "offset": self.last_update_id + 1 if self.last_update_id else None
             }
-            response = requests.get(url, params=params, timeout=3)
+            response = requests.get(url, params=params, timeout=5)
             if response.ok:
                 data = response.json()
                 if data.get('result'):
@@ -79,8 +79,12 @@ class TelegramNotifier:
                             if str(update['message']['chat']['id']) == str(self.chat_id):
                                 messages.append(update['message']['text'])
                     return messages
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
+            # 네트워크 에러는 조용히 무시 (다음 루프에서 재시도)
             pass
+        except Exception as e:
+            # 기타 에러만 로그
+            print(f"텔레그램 업데이트 체크 실패: {e}")
         return []
 
 
@@ -591,6 +595,7 @@ class Upbit20_200Bot:
 
         last_scan_time = None
         scan_interval = 300  # 5분마다 스캔
+        no_coin_wait = 1800  # 조건 충족 코인 없을 때 30분 대기
 
         try:
             while self.running:
@@ -627,9 +632,13 @@ class Upbit20_200Bot:
                         last_scan_time = current_time
 
                         if not market:
-                            print(f"⏳ {scan_interval}초 후 재스캔...")
-                            # 60초 대기를 1초씩 쪼개서 명령어 응답 빠르게
-                            for _ in range(60):
+                            # 조건 충족 코인이 없을 때는 30분 대기
+                            wait_minutes = no_coin_wait // 60
+                            print(f"⏳ 조건 충족 코인 없음. {wait_minutes}분 후 재스캔...")
+                            self.telegram.send(f"⚪ 조건 충족 코인이 없습니다.\n{wait_minutes}분 후 다시 스캔합니다.")
+
+                            # 30분 대기를 1초씩 쪼개서 명령어 응답 빠르게
+                            for _ in range(no_coin_wait):
                                 time.sleep(1)
                                 if not self.running:
                                     return
