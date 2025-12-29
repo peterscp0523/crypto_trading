@@ -4,6 +4,15 @@
 # SSH 키 파일
 ssh-key*
 
+# Oracle Wallet (민감 정보)
+wallet/
+*.sso
+*.p12
+cwallet.sso
+ewallet.p12
+tnsnames.ora
+sqlnet.ora
+
 # Python
 __pycache__/
 *.py[cod]
@@ -43,3 +52,8 @@ Thumbs.db
 # 백업
 *.bak
 *.backup
+
+# 백테스팅 결과
+backtest_results.csv
+backtest_trades.csv
+*.csv

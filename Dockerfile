@@ -22,5 +22,5 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # 실행 권한 설정
 RUN chmod +x telegram_bot.py
 
-# 실제 거래 봇 실행 (단일 코인 집중 전략)
-CMD ["python", "-u", "run_single_coin_bot.py"]
+# 실제 거래 봇 실행 (비트코인 전용 보수적 전략)
+CMD ["python", "-u", "btc_only_bot.py"]
