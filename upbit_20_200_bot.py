@@ -628,13 +628,17 @@ class Upbit20_200Bot:
 
                         if not market:
                             print(f"⏳ {scan_interval}초 후 재스캔...")
-                            time.sleep(60)
+                            # 60초 대기를 1초씩 쪼개서 명령어 응답 빠르게
+                            for _ in range(60):
+                                time.sleep(1)
+                                if not self.running:
+                                    return
                             continue
 
                         # 매수 신호 재확인
                         df = self.get_candles(market)
                         if df is None:
-                            time.sleep(5)
+                            time.sleep(1)
                             continue
 
                         df = self.calculate_indicators(df)
@@ -646,7 +650,7 @@ class Upbit20_200Bot:
                         else:
                             print(f"⚠️ {market} 매수 조건 미충족")
 
-                    time.sleep(10)
+                    time.sleep(1)  # 10초 → 1초로 변경
 
                 # 포지션 있으면 모니터링
                 else:
@@ -654,7 +658,7 @@ class Upbit20_200Bot:
                     current_price = self.get_current_price(market)
 
                     if not current_price:
-                        time.sleep(5)
+                        time.sleep(1)
                         continue
 
                     # 캔들 데이터 조회 (20MA 이탈 체크용)
@@ -672,13 +676,17 @@ class Upbit20_200Bot:
                         if not self.position:
                             print("\n✅ 포지션 청산 완료. 10초 후 재스캔 가능...")
                             last_scan_time = None  # 스캔 시간 리셋
-                            time.sleep(10)
+                            # 10초 대기를 1초씩 쪼개기
+                            for _ in range(10):
+                                time.sleep(1)
+                                if not self.running:
+                                    return
 
                     else:
                         # 현재 수익률 표시
                         profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
                         print(f"📊 {market} | 가격: ₩{current_price:,.0f} | 수익: {profit_pct:+.2f}%", end='\r')
-                        time.sleep(3)
+                        time.sleep(1)  # 3초 → 1초로 변경
 
         except KeyboardInterrupt:
             print("\n\n봇 종료 중...")
