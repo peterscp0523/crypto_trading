@@ -88,7 +88,7 @@ class Upbit20_200Bot:
     """업비트 20/200 SMA 자동매매 봇"""
 
     def __init__(self, access_key=None, secret_key=None, telegram_token=None, telegram_chat_id=None,
-                 dry_run=True, initial_balance_krw=1_000_000, timeframe=1):
+                 dry_run=True, initial_balance_krw=None, timeframe=1):
         """
         Args:
             access_key: 업비트 API Access Key
@@ -96,7 +96,7 @@ class Upbit20_200Bot:
             telegram_token: 텔레그램 봇 토큰
             telegram_chat_id: 텔레그램 채팅 ID
             dry_run: 시뮬레이션 모드 (True=가상거래, False=실거래)
-            initial_balance_krw: 초기 자본 (KRW)
+            initial_balance_krw: 초기 자본 (KRW) - None이면 실제 잔고 조회
             timeframe: 타임프레임 (분) - 1, 3, 5, 10, 15, 30, 60
         """
         # 업비트 API
@@ -118,9 +118,20 @@ class Upbit20_200Bot:
         self.dry_run = dry_run
         self.timeframe = timeframe
 
-        # 자본 관리 (시뮬레이션)
-        self.balance_krw = initial_balance_krw
-        self.initial_balance = initial_balance_krw
+        # 자본 관리
+        if initial_balance_krw is None:
+            # 실제 잔고 조회
+            if not dry_run:
+                real_balance = self.get_account_balance()
+                self.balance_krw = real_balance
+                self.initial_balance = real_balance
+            else:
+                # 시뮬레이션이면 기본값 100만원
+                self.balance_krw = 1_000_000
+                self.initial_balance = 1_000_000
+        else:
+            self.balance_krw = initial_balance_krw
+            self.initial_balance = initial_balance_krw
 
         # 현재 포지션
         self.position = None  # {'market', 'entry_price', 'amount', 'entry_time', 'partial_sold', 'invest_krw'}
@@ -753,7 +764,7 @@ def main():
         telegram_token=telegram_token,
         telegram_chat_id=telegram_chat_id,
         dry_run=dry_run,
-        initial_balance_krw=1_000_000,
+        initial_balance_krw=None,  # 실거래는 실제 잔고, 시뮬레이션은 100만원
         timeframe=timeframe
     )
 
