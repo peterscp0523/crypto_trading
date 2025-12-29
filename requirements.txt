@@ -3,3 +3,5 @@ PyJWT==2.8.0
 python-dotenv==1.0.0
 oracledb==3.4.1
 numpy==1.26.4
+pandas==2.1.4
+ccxt==4.2.25

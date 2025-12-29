@@ -20,7 +20,7 @@ ENV TZ=Asia/Seoul
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 실행 권한 설정
-RUN chmod +x telegram_bot.py
+RUN chmod +x upbit_20_200_bot.py
 
-# 실제 거래 봇 실행 (비트코인 전용 보수적 전략)
-CMD ["python", "-u", "btc_only_bot.py"]
+# 실제 거래 봇 실행 (20/200 SMA 전략)
+CMD ["python", "-u", "upbit_20_200_bot.py", "live", "1"]

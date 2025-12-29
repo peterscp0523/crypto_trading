@@ -59,11 +59,12 @@ jobs:
             # Docker 이미지 로드 (압축 해제하면서)
             gunzip -c /tmp/crypto-bot.tar.gz | docker load
 
-            # 기존 컨테이너 중지 및 제거
-            docker stop crypto-trading-bot || true
-            docker rm crypto-trading-bot || true
+            # 모든 기존 트레이딩 봇 컨테이너 중지 및 제거
+            echo "=== Stopping all existing trading bots ==="
+            docker ps -a | grep -E "crypto-trading-bot|telegram_bot" | awk '{print $1}' | xargs -r docker stop || true
+            docker ps -a | grep -E "crypto-trading-bot|telegram_bot" | awk '{print $1}' | xargs -r docker rm || true
 
-            # 새 컨테이너 실행
+            # 새 컨테이너 실행 (20/200 SMA 봇)
             docker run -d \
               --name crypto-trading-bot \
               --restart unless-stopped \
@@ -72,15 +73,6 @@ jobs:
               -e UPBIT_SECRET_KEY="${{ secrets.UPBIT_SECRET_KEY }}" \
               -e TELEGRAM_TOKEN="${{ secrets.TELEGRAM_TOKEN }}" \
               -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
-              -e MARKET="${{ secrets.MARKET }}" \
-              -e CHECK_INTERVAL="${{ secrets.CHECK_INTERVAL }}" \
-              -e ENABLE_MULTI_COIN="false" \
-              -e USE_ORACLE_DB="${{ secrets.USE_ORACLE_DB }}" \
-              -e ORACLE_DB_USER="${{ secrets.ORACLE_DB_USER }}" \
-              -e ORACLE_DB_PASSWORD="${{ secrets.ORACLE_DB_PASSWORD }}" \
-              -e ORACLE_DB_DSN="${{ secrets.ORACLE_DB_DSN }}" \
-              -e ORACLE_WALLET_PASSWORD="${{ secrets.ORACLE_WALLET_PASSWORD }}" \
-              -e TNS_ADMIN="/app/wallet" \
               ${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}
 
             # 정리
