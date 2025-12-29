@@ -595,7 +595,6 @@ class Upbit20_200Bot:
 
         last_scan_time = None
         scan_interval = 300  # 5분마다 스캔
-        no_coin_wait = 1800  # 조건 충족 코인 없을 때 30분 대기
 
         try:
             while self.running:
@@ -632,16 +631,10 @@ class Upbit20_200Bot:
                         last_scan_time = current_time
 
                         if not market:
-                            # 조건 충족 코인이 없을 때는 30분 대기
-                            wait_minutes = no_coin_wait // 60
-                            print(f"⏳ 조건 충족 코인 없음. {wait_minutes}분 후 재스캔...")
-                            self.telegram.send(f"⚪ 조건 충족 코인이 없습니다.\n{wait_minutes}분 후 다시 스캔합니다.")
-
-                            # 30분 대기를 1초씩 쪼개서 명령어 응답 빠르게
-                            for _ in range(no_coin_wait):
-                                time.sleep(1)
-                                if not self.running:
-                                    return
+                            # 조건 충족 코인이 없어도 5분 후 재스캔
+                            print(f"⏳ 조건 충족 코인 없음. 다음 스캔까지 대기...")
+                            # 텔레그램 알림은 스팸 방지를 위해 생략
+                            time.sleep(1)
                             continue
 
                         # 매수 신호 재확인
