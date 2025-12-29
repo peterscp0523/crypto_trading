@@ -38,6 +38,11 @@ jobs:
           scp -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no \
             crypto-bot.tar.gz ${{ secrets.ORACLE_USERNAME }}@${{ secrets.ORACLE_HOST }}:/tmp/
 
+          # 전송 확인
+          ssh -i ~/.ssh/oracle_key -o StrictHostKeyChecking=no \
+            ${{ secrets.ORACLE_USERNAME }}@${{ secrets.ORACLE_HOST }} \
+            "ls -lh /tmp/crypto-bot.tar.gz"
+
       - name: Deploy to Oracle Cloud
         uses: appleboy/ssh-action@v1.0.3
         with:
