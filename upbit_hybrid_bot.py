@@ -307,14 +307,26 @@ class UpbitHybridBot:
         return uptrend and above_200ma and near_20ma
 
     def check_entry_box(self, row):
-        """박스권 전략 진입"""
+        """박스권 전략 진입 (반등 확인 추가)"""
         if pd.isna(row['box_position']) or pd.isna(row['rsi']):
             return False
 
-        at_bottom = 10 <= row['box_position'] <= 30
+        # 1. 박스 하단 (10-25%로 범위 축소)
+        at_bottom = 10 <= row['box_position'] <= 25
+
+        # 2. RSI 과매도 (< 35)
         rsi_oversold = row['rsi'] < 35
 
-        return at_bottom and rsi_oversold
+        # 3. 반등 확인: 현재가가 저가보다 높음 (바닥에서 올라오는 중)
+        bouncing = row['close'] > row['low']
+
+        # 4. 거래량 감소 (매도 압력 소진, 선택적)
+        volume_ok = True
+        if not pd.isna(row.get('volume_ratio')):
+            # 거래량이 평균보다 너무 많지 않음 (패닉 매도 아님)
+            volume_ok = row['volume_ratio'] < 2.0
+
+        return at_bottom and rsi_oversold and bouncing and volume_ok
 
     def check_exit_trend(self, row, entry_price):
         """추세 전략 청산"""
@@ -516,7 +528,6 @@ class UpbitHybridBot:
                         profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
 
                         # 1분마다 상태 출력 (60초 = 60번 루프)
-                        import time
                         current_second = int(time.time()) % 60
                         if current_second == 0:
                             print(f"\n📊 {self.position['market']} 모니터링")
