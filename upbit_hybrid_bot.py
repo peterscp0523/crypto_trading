@@ -282,8 +282,13 @@ class UpbitHybridBot:
 
         return df
 
-    def detect_market_mode(self, row):
-        """시장 모드 감지"""
+    def detect_market_mode(self, row, prev_mode=None):
+        """시장 모드 감지 (히스테리시스 적용)
+
+        Args:
+            row: 분석할 데이터 행
+            prev_mode: 이전 모드 (None이면 독립 감지, 지정하면 히스테리시스 적용)
+        """
         if pd.isna(row['slope_20ma']) or pd.isna(row['slope_200ma']):
             return 'BOX'
 
@@ -300,8 +305,13 @@ class UpbitHybridBot:
         atr_increasing = row['atr_change'] > 15.0 if not pd.isna(row['atr_change']) else False
         strong_volume = row['volume_ratio'] > 2.0 if not pd.isna(row['volume_ratio']) else False
 
-        # 모드 결정 (히스테리시스)
-        if self.current_mode == 'BOX':
+        # 독립 감지 (스캔용 - prev_mode가 None일 때)
+        if prev_mode is None:
+            trend_signals = [ma20_strong_trend and same_direction, atr_increasing, strong_volume]
+            return 'TREND' if sum(trend_signals) >= 2 else 'BOX'
+
+        # 히스테리시스 적용 (포지션 모니터링용)
+        if prev_mode == 'BOX':
             trend_signals = [ma20_strong_trend and same_direction, atr_increasing, strong_volume]
             return 'TREND' if sum(trend_signals) >= 2 else 'BOX'
         else:
@@ -396,8 +406,8 @@ class UpbitHybridBot:
                 df = self.calculate_indicators(df)
                 latest = df.iloc[-1]
 
-                # 모드 감지
-                mode = self.detect_market_mode(latest)
+                # 모드 감지 (독립 감지 - prev_mode=None)
+                mode = self.detect_market_mode(latest, prev_mode=None)
 
                 # 진입 조건 체크
                 entry_signal = False
@@ -641,8 +651,8 @@ class UpbitHybridBot:
                             print(f"현재가: {current_price:,.0f}원 | 진입가: {self.position['entry_price']:,.0f}원 | 수익률: {profit_pct:+.2f}%")
                             print(f"RSI: {latest['rsi']:.1f} | 모드: {self.current_mode}")
 
-                        # 모드 업데이트
-                        new_mode = self.detect_market_mode(latest)
+                        # 모드 업데이트 (히스테리시스 적용 - prev_mode 전달)
+                        new_mode = self.detect_market_mode(latest, prev_mode=self.current_mode)
                         if new_mode != self.current_mode:
                             print(f"🔄 모드 전환: {self.current_mode} → {new_mode}")
                             self.current_mode = new_mode
