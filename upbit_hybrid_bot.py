@@ -287,7 +287,12 @@ class UpbitHybridBot:
     def scan_markets(self):
         """코인 스캔"""
         try:
-            markets = self.upbit.get_all_krw_markets()
+            # 모든 KRW 마켓 가져오기
+            url = "https://api.upbit.com/v1/market/all"
+            response = requests.get(url)
+            all_markets = response.json()
+            markets = [m['market'] for m in all_markets if m['market'].startswith('KRW-')]
+
             qualified = []
 
             for market in markets:
