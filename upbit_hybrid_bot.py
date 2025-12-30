@@ -440,19 +440,35 @@ class UpbitHybridBot:
         else:
             # 실거래 매수
             try:
-                result = self.upbit.buy_market_order(market, self.balance_krw * 0.9995)
-                if result:
-                    self.position = {
-                        'market': market,
-                        'entry_price': price,
-                        'entry_time': datetime.now(),
-                        'quantity': float(result.get('executed_volume', 0)),
-                        'entry_mode': self.current_mode
-                    }
-                    self.balance_krw = 0
-                    return True
+                buy_amount = self.balance_krw * 0.9995
+                print(f"💳 매수 시도: {market}, 금액: {buy_amount:,.0f}원")
+
+                result = self.upbit.buy_market_order(market, buy_amount)
+
+                print(f"📋 매수 결과: {result}")
+
+                if result and isinstance(result, dict) and 'uuid' in result:
+                    # 주문 성공
+                    executed_volume = float(result.get('executed_volume', 0))
+                    if executed_volume > 0:
+                        self.position = {
+                            'market': market,
+                            'entry_price': price,
+                            'entry_time': datetime.now(),
+                            'quantity': executed_volume,
+                            'entry_mode': self.current_mode
+                        }
+                        self.balance_krw = 0
+                        print(f"✅ 매수 완료: {executed_volume:.8f}개")
+                        return True
+                    else:
+                        print(f"❌ 매수 실패: executed_volume이 0")
+                else:
+                    print(f"❌ 매수 실패: 잘못된 응답 형식")
             except Exception as e:
-                print(f"❌ 매수 실패: {e}")
+                print(f"❌ 매수 실패 (예외): {e}")
+                import traceback
+                traceback.print_exc()
         return False
 
     def execute_sell(self, price, ratio=1.0):
@@ -523,11 +539,14 @@ class UpbitHybridBot:
 
                     if qualified:
                         best = qualified[0]
-                        print(f"✅ 진입: {best['market']} ({best['mode']} 모드)")
-                        self.telegram.send(f"📈 매수\n코인: {best['market']}\n모드: {best['mode']}\n가격: {best['price']:,.0f}원")
+                        print(f"✅ 진입 신호: {best['market']} ({best['mode']} 모드)")
 
                         if self.execute_buy(best['market'], best['price']):
                             self.current_mode = best['mode']
+                            self.telegram.send(f"📈 매수 성공\n코인: {best['market']}\n모드: {best['mode']}\n가격: {best['price']:,.0f}원")
+                        else:
+                            print(f"❌ 매수 실행 실패, 계속 스캔합니다")
+                            self.telegram.send(f"❌ 매수 실패\n코인: {best['market']}\n사유: API 오류")
 
                 # 포지션 있으면 모니터링
                 else:
