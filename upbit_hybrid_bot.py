@@ -403,10 +403,35 @@ class UpbitHybridBot:
             all_markets = response.json()
             markets = [m['market'] for m in all_markets if m['market'].startswith('KRW-')]
 
-            qualified = []
-            print(f"\n🔍 스캔 시작: {len(markets)}개 코인")
+            # 1차: 모든 코인의 거래대금 수집
+            volume_data = []
+            print(f"\n🔍 거래량 분석 중...")
 
             for market in markets:
+                df = self.fetch_candles(market, count=1)
+                if df is None or len(df) < 1:
+                    continue
+
+                latest = df.iloc[-1]
+                volume_krw = latest['volume'] * latest['close']  # 거래대금 (KRW)
+                volume_data.append({
+                    'market': market,
+                    'volume_krw': volume_krw
+                })
+                time.sleep(0.05)
+
+            # 거래대금 기준 정렬
+            volume_data.sort(key=lambda x: x['volume_krw'], reverse=True)
+
+            # 상위 50개 코인만 스캔 (거래량 상위권)
+            top_volume_markets = [v['market'] for v in volume_data[:50]]
+            print(f"📊 거래량 상위 50개 코인 선정 완료\n")
+
+            # 2차: 선정된 코인만 상세 분석
+            qualified = []
+            print(f"🔍 스캔 시작: {len(top_volume_markets)}개 코인")
+
+            for market in top_volume_markets:
                 df = self.fetch_candles(market, count=200)
                 if df is None or len(df) < 200:
                     continue
@@ -429,8 +454,9 @@ class UpbitHybridBot:
                 rsi = latest.get('rsi', 0)
                 volume_ratio = latest.get('volume_ratio', 0)
                 slope = latest.get('slope_20ma', 0)
+                volume_krw = latest['volume'] * latest['close']
 
-                log_msg = f"{market}: 가격={latest['close']:,.0f}, RSI={rsi:.1f}, 박스={box_pos:.1f}%, 거래량비={volume_ratio:.2f}, 기울기={slope:.4f}, 모드={mode}"
+                log_msg = f"{market}: 가격={latest['close']:,.0f}, RSI={rsi:.1f}, 박스={box_pos:.1f}%, 거래량비={volume_ratio:.2f}, 거래대금={volume_krw/1e8:.1f}억, 기울기={slope:.4f}, 모드={mode}"
 
                 if entry_signal:
                     print(f"✅ {log_msg} -> 진입신호")
@@ -439,17 +465,19 @@ class UpbitHybridBot:
                         'price': latest['close'],
                         'mode': mode,
                         'slope': latest['slope_20ma'],
-                        'rsi': latest['rsi']
+                        'rsi': latest['rsi'],
+                        'volume_ratio': latest['volume_ratio']
                     })
                 else:
                     print(f"   {log_msg}")
 
                 time.sleep(0.1)
 
-            print(f"📊 스캔 완료: {len(markets)}개 중 {len(qualified)}개 진입신호\n")
+            print(f"📊 스캔 완료: {len(top_volume_markets)}개 중 {len(qualified)}개 진입신호\n")
 
             if qualified:
-                qualified.sort(key=lambda x: abs(x['slope']), reverse=True)
+                # slope와 volume_ratio를 혼합해서 정렬 (거래량도 고려)
+                qualified.sort(key=lambda x: abs(x['slope']) * (1 + x['volume_ratio']), reverse=True)
 
             return qualified
         except Exception as e:
