@@ -494,18 +494,38 @@ class UpbitHybridBot:
                         df = self.calculate_indicators(df)
                         latest = df.iloc[-1]
 
+                        # 현재 수익률 계산
+                        current_price = latest['close']
+                        profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
+
+                        # 1분마다 상태 출력 (60초 = 60번 루프)
+                        import time
+                        current_second = int(time.time()) % 60
+                        if current_second == 0:
+                            print(f"\n📊 {self.position['market']} 모니터링")
+                            print(f"현재가: {current_price:,.0f}원 | 진입가: {self.position['entry_price']:,.0f}원 | 수익률: {profit_pct:+.2f}%")
+                            print(f"RSI: {latest['rsi']:.1f} | 모드: {self.current_mode}")
+
                         # 모드 업데이트
                         new_mode = self.detect_market_mode(latest)
                         if new_mode != self.current_mode:
                             print(f"🔄 모드 전환: {self.current_mode} → {new_mode}")
                             self.current_mode = new_mode
 
-                        # 청산 체크
+                        # 청산 체크 - 두 가지 전략 모두 확인 (먼저 충족되는 조건 사용)
                         should_exit, reason = (None, None)
-                        if self.position['entry_mode'] == 'TREND':
-                            should_exit, reason = self.check_exit_trend(latest, self.position['entry_price'])
-                        else:
-                            should_exit, reason = self.check_exit_box(latest, self.position['entry_price'])
+
+                        # BOX 전략 청산 조건
+                        box_exit, box_reason = self.check_exit_box(latest, self.position['entry_price'])
+
+                        # TREND 전략 청산 조건
+                        trend_exit, trend_reason = self.check_exit_trend(latest, self.position['entry_price'])
+
+                        # 둘 중 하나라도 청산 신호면 매도 (보수적)
+                        if box_exit:
+                            should_exit, reason = box_exit, f"BOX: {box_reason}"
+                        elif trend_exit:
+                            should_exit, reason = trend_exit, f"TREND: {trend_reason}"
 
                         if should_exit:
                             if reason == "부분 익절":
