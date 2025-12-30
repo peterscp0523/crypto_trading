@@ -150,32 +150,48 @@ class UpbitHybridBot:
             return 0
 
     def check_existing_position(self):
-        """기존 보유 코인 확인"""
+        """기존 보유 코인 확인 (가장 가치 높은 코인을 포지션으로)"""
         try:
             accounts = self.upbit.get_accounts()
+            max_value = 0
+            max_coin = None
+
+            # 모든 코인 중 가장 가치 높은 것 찾기
             for account in accounts:
                 if account['currency'] != 'KRW':
                     balance = float(account.get('balance', 0))
-                    if balance > 0:
-                        market = f"KRW-{account['currency']}"
-                        avg_buy_price = float(account.get('avg_buy_price', 0))
+                    avg_buy_price = float(account.get('avg_buy_price', 0))
+                    coin_value = balance * avg_buy_price
 
-                        print(f"\n🔍 기존 포지션 발견!")
-                        print(f"코인: {market}")
-                        print(f"수량: {balance:.8f}개")
-                        print(f"평균 매수가: {avg_buy_price:,.0f}원")
-
-                        # 포지션 설정 (BOX 모드로 가정, 실제 진입 모드는 알 수 없음)
-                        self.position = {
-                            'market': market,
-                            'entry_price': avg_buy_price,
-                            'quantity': balance,
-                            'entry_mode': 'BOX',  # 기본값
-                            'entry_time': datetime.now()
+                    if coin_value > max_value:
+                        max_value = coin_value
+                        max_coin = {
+                            'currency': account['currency'],
+                            'balance': balance,
+                            'avg_buy_price': avg_buy_price,
+                            'value': coin_value
                         }
 
-                        self.telegram.send(f"📌 기존 포지션 인식\n코인: {market}\n진입가: {avg_buy_price:,.0f}원")
-                        return
+            # 가치가 1000원 이상인 코인만 포지션으로 설정
+            if max_coin and max_value > 1000:
+                market = f"KRW-{max_coin['currency']}"
+
+                print(f"\n🔍 기존 포지션 발견!")
+                print(f"코인: {market}")
+                print(f"수량: {max_coin['balance']:.8f}개")
+                print(f"평균 매수가: {max_coin['avg_buy_price']:,.0f}원")
+                print(f"평가금액: {max_value:,.0f}원")
+
+                # 포지션 설정
+                self.position = {
+                    'market': market,
+                    'entry_price': max_coin['avg_buy_price'],
+                    'quantity': max_coin['balance'],
+                    'entry_mode': 'BOX',  # 기본값
+                    'entry_time': datetime.now()
+                }
+
+                self.telegram.send(f"📌 기존 포지션 인식\n코인: {market}\n진입가: {max_coin['avg_buy_price']:,.0f}원\n평가금액: {max_value:,.0f}원")
         except Exception as e:
             print(f"❌ 기존 포지션 확인 실패: {e}")
 
