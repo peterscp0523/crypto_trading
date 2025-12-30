@@ -90,9 +90,22 @@ class UpbitHybridBot:
         # 자산 관리
         if initial_balance_krw is None:
             if not dry_run:
-                real_balance = self.get_account_balance()
-                self.balance_krw = real_balance
-                self.initial_balance = real_balance
+                # 실거래: 초기 자본을 파일에서 읽기 (없으면 현재 잔고로 생성)
+                import os.path
+                initial_balance_file = 'initial_balance.txt'
+
+                if os.path.exists(initial_balance_file):
+                    with open(initial_balance_file, 'r') as f:
+                        self.initial_balance = float(f.read().strip())
+                    print(f"📂 초기 자본 로드: {self.initial_balance:,.0f}원")
+                else:
+                    real_balance = self.get_account_balance()
+                    self.initial_balance = real_balance
+                    with open(initial_balance_file, 'w') as f:
+                        f.write(str(self.initial_balance))
+                    print(f"📂 초기 자본 저장: {self.initial_balance:,.0f}원")
+
+                self.balance_krw = self.get_account_balance()
             else:
                 self.balance_krw = 1000000
                 self.initial_balance = 1000000
@@ -576,7 +589,14 @@ class UpbitHybridBot:
                                 success, profit = self.execute_sell(latest['close'], ratio=1.0)
                                 if success:
                                     profit_pct = (profit / self.initial_balance) * 100
-                                    total_return = ((self.balance_krw - self.initial_balance) / self.initial_balance) * 100
+
+                                    # 실거래는 실제 잔고 조회, 시뮬레이션은 balance_krw 사용
+                                    if not self.dry_run:
+                                        current_total = self.get_account_balance()
+                                    else:
+                                        current_total = self.balance_krw
+
+                                    total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
                                     print(f"📊 전체 청산 ({reason}): +{profit_pct:.2f}% | 누적: +{total_return:.2f}%")
                                     self.telegram.send(f"📊 매도 ({reason})\n수익: +{profit_pct:.2f}%\n누적: +{total_return:.2f}%")
 

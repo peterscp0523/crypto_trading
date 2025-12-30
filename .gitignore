@@ -57,3 +57,4 @@ Thumbs.db
 backtest_results.csv
 backtest_trades.csv
 *.csv
+initial_balance.txt
