@@ -483,21 +483,27 @@ class UpbitHybridBot:
                         order_info = self.upbit.get_order(order_uuid)
                         print(f"📊 체결 확인 ({i+1}/10): state={order_info.get('state')}, executed_volume={order_info.get('executed_volume')}")
 
-                        if order_info and order_info.get('state') == 'done':
+                        if order_info and order_info.get('state') in ['done', 'cancel']:
                             executed_volume = float(order_info.get('executed_volume', 0))
-                            paid_fee = float(order_info.get('paid_fee', 0))
-                            avg_price = float(order_info.get('trades', [{}])[0].get('price', price)) if order_info.get('trades') else price
 
-                            self.position = {
-                                'market': market,
-                                'entry_price': avg_price,
-                                'entry_time': datetime.now(),
-                                'quantity': executed_volume,
-                                'entry_mode': self.current_mode
-                            }
-                            self.balance_krw = 0
-                            print(f"✅ 매수 완료: {executed_volume:.8f}개, 평균가: {avg_price:,.0f}원, 수수료: {paid_fee:,.0f}원")
-                            return True
+                            # 체결된 수량이 있으면 성공 (부분 체결 후 취소도 포함)
+                            if executed_volume > 0:
+                                paid_fee = float(order_info.get('paid_fee', 0))
+                                avg_price = float(order_info.get('trades', [{}])[0].get('price', price)) if order_info.get('trades') else price
+
+                                self.position = {
+                                    'market': market,
+                                    'entry_price': avg_price,
+                                    'entry_time': datetime.now(),
+                                    'quantity': executed_volume,
+                                    'entry_mode': self.current_mode
+                                }
+                                self.balance_krw = 0
+                                print(f"✅ 매수 완료: {executed_volume:.8f}개, 평균가: {avg_price:,.0f}원, 수수료: {paid_fee:,.0f}원 (상태: {order_info.get('state')})")
+                                return True
+                            else:
+                                print(f"❌ 매수 실패: 주문 취소됨 (executed_volume=0)")
+                                return False
 
                     print(f"❌ 매수 실패: 체결 시간 초과")
                 else:
@@ -544,24 +550,30 @@ class UpbitHybridBot:
                         order_info = self.upbit.get_order(order_uuid)
                         print(f"📊 체결 확인 ({i+1}/10): state={order_info.get('state')}, executed_volume={order_info.get('executed_volume')}")
 
-                        if order_info and order_info.get('state') == 'done':
+                        if order_info and order_info.get('state') in ['done', 'cancel']:
                             executed_volume = float(order_info.get('executed_volume', 0))
-                            paid_fee = float(order_info.get('paid_fee', 0))
-                            trades = order_info.get('trades', [])
-                            avg_price = float(trades[0].get('price', price)) if trades else price
 
-                            profit = (avg_price - self.position['entry_price']) * executed_volume - paid_fee
-                            self.balance_krw += avg_price * executed_volume - paid_fee
+                            # 체결된 수량이 있으면 성공 (부분 체결 후 취소도 포함)
+                            if executed_volume > 0:
+                                paid_fee = float(order_info.get('paid_fee', 0))
+                                trades = order_info.get('trades', [])
+                                avg_price = float(trades[0].get('price', price)) if trades else price
 
-                            if ratio >= 1.0:
-                                self.position = None
-                                self.partial_sold = False
+                                profit = (avg_price - self.position['entry_price']) * executed_volume - paid_fee
+                                self.balance_krw += avg_price * executed_volume - paid_fee
+
+                                if ratio >= 1.0:
+                                    self.position = None
+                                    self.partial_sold = False
+                                else:
+                                    self.position['quantity'] -= executed_volume
+                                    self.partial_sold = True
+
+                                print(f"✅ 매도 완료: {executed_volume:.8f}개, 평균가: {avg_price:,.0f}원, 수수료: {paid_fee:,.0f}원, 수익: {profit:,.0f}원 (상태: {order_info.get('state')})")
+                                return True, profit
                             else:
-                                self.position['quantity'] -= executed_volume
-                                self.partial_sold = True
-
-                            print(f"✅ 매도 완료: {executed_volume:.8f}개, 평균가: {avg_price:,.0f}원, 수수료: {paid_fee:,.0f}원, 수익: {profit:,.0f}원")
-                            return True, profit
+                                print(f"❌ 매도 실패: 주문 취소됨 (executed_volume=0)")
+                                return False, 0
 
                     print(f"❌ 매도 실패: 체결 시간 초과")
             except Exception as e:
