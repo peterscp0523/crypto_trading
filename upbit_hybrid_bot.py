@@ -140,25 +140,24 @@ class UpbitHybridBot:
             response = requests.get(url, params=params)
             candles = response.json()
 
-            if not candles:
+            if not candles or not isinstance(candles, list):
                 return None
 
             df = pd.DataFrame(candles)
+            # 업비트는 최신 데이터가 먼저 오므로 역순 정렬
             df = df.iloc[::-1].reset_index(drop=True)
 
-            df = df.rename(columns={
-                'candle_date_time_kst': 'timestamp',
-                'opening_price': 'open',
-                'high_price': 'high',
-                'low_price': 'low',
-                'trade_price': 'close',
-                'candle_acc_trade_volume': 'volume'
+            # 필요한 컬럼만 선택하고 새 DataFrame 생성 (중복 키 방지)
+            df_clean = pd.DataFrame({
+                'timestamp': pd.to_datetime(df['candle_date_time_kst']),
+                'open': df['opening_price'],
+                'high': df['high_price'],
+                'low': df['low_price'],
+                'close': df['trade_price'],
+                'volume': df['candle_acc_trade_volume']
             })
 
-            df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-
-            return df
+            return df_clean
         except Exception as e:
             print(f"❌ 캔들 조회 실패 ({market}): {e}")
             return None
