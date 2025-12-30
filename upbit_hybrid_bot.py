@@ -182,13 +182,14 @@ class UpbitHybridBot:
                 print(f"평균 매수가: {max_coin['avg_buy_price']:,.0f}원")
                 print(f"평가금액: {max_value:,.0f}원")
 
-                # 포지션 설정
+                # 포지션 설정 (기존 포지션임을 표시)
                 self.position = {
                     'market': market,
                     'entry_price': max_coin['avg_buy_price'],
                     'quantity': max_coin['balance'],
                     'entry_mode': 'BOX',  # 기본값
-                    'entry_time': datetime.now()
+                    'entry_time': datetime.now(),
+                    'is_existing': True  # 기존 포지션 플래그
                 }
 
                 self.telegram.send(f"📌 기존 포지션 인식\n코인: {market}\n진입가: {max_coin['avg_buy_price']:,.0f}원\n평가금액: {max_value:,.0f}원")
@@ -536,6 +537,16 @@ class UpbitHybridBot:
 
                         # TREND 전략 청산 조건
                         trend_exit, trend_reason = self.check_exit_trend(latest, self.position['entry_price'])
+
+                        # 기존 포지션은 손절 제외 (언제/왜 샀는지 모르므로)
+                        is_existing = self.position.get('is_existing', False)
+                        if is_existing:
+                            if box_exit and box_reason == "손절":
+                                box_exit = False
+                                box_reason = None
+                            if trend_exit and trend_reason == "손절":
+                                trend_exit = False
+                                trend_reason = None
 
                         # 둘 중 하나라도 청산 신호면 매도 (보수적)
                         if box_exit:
