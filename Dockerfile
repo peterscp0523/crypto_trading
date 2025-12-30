@@ -20,7 +20,7 @@ ENV TZ=Asia/Seoul
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 실행 권한 설정
-RUN chmod +x upbit_20_200_bot.py
+RUN chmod +x upbit_hybrid_bot.py
 
-# 실제 거래 봇 실행 (20/200 SMA 전략)
-CMD ["python", "-u", "upbit_20_200_bot.py", "live", "1"]
+# 실제 거래 봇 실행 (하이브리드 전략: BOX + TREND)
+CMD ["python", "-u", "upbit_hybrid_bot.py", "live", "5"]
