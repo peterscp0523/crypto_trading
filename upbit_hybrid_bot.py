@@ -118,19 +118,66 @@ class UpbitHybridBot:
         print(f"초기 모드: {self.current_mode}")
         print(f"{'='*60}\n")
 
+        # 실거래 모드일 때 기존 보유 코인 확인
+        if not dry_run:
+            self.check_existing_position()
+
     def get_account_balance(self):
-        """계좌 잔고 조회"""
+        """계좌 잔고 조회 (KRW + 보유 코인 평가금액)"""
         try:
             accounts = self.upbit.get_accounts()
+            total_balance = 0
+            krw_balance = 0
+
             for account in accounts:
                 if account['currency'] == 'KRW':
-                    balance = float(account['balance'])
-                    print(f"✅ 실제 잔고: {balance:,.0f}원")
-                    return balance
-            return 0
+                    krw_balance = float(account['balance'])
+                    total_balance += krw_balance
+                else:
+                    # 보유 코인 평가금액
+                    avg_buy_price = float(account.get('avg_buy_price', 0))
+                    balance = float(account.get('balance', 0))
+                    coin_value = avg_buy_price * balance
+                    if coin_value > 0:
+                        total_balance += coin_value
+                        print(f"💰 보유 코인: {account['currency']} ({balance:.8f}개) = {coin_value:,.0f}원")
+
+            print(f"✅ KRW 잔고: {krw_balance:,.0f}원")
+            print(f"✅ 총 자산: {total_balance:,.0f}원")
+            return total_balance
         except Exception as e:
             print(f"❌ 잔고 조회 실패: {e}")
             return 0
+
+    def check_existing_position(self):
+        """기존 보유 코인 확인"""
+        try:
+            accounts = self.upbit.get_accounts()
+            for account in accounts:
+                if account['currency'] != 'KRW':
+                    balance = float(account.get('balance', 0))
+                    if balance > 0:
+                        market = f"KRW-{account['currency']}"
+                        avg_buy_price = float(account.get('avg_buy_price', 0))
+
+                        print(f"\n🔍 기존 포지션 발견!")
+                        print(f"코인: {market}")
+                        print(f"수량: {balance:.8f}개")
+                        print(f"평균 매수가: {avg_buy_price:,.0f}원")
+
+                        # 포지션 설정 (BOX 모드로 가정, 실제 진입 모드는 알 수 없음)
+                        self.position = {
+                            'market': market,
+                            'entry_price': avg_buy_price,
+                            'quantity': balance,
+                            'entry_mode': 'BOX',  # 기본값
+                            'entry_time': datetime.now()
+                        }
+
+                        self.telegram.send(f"📌 기존 포지션 인식\n코인: {market}\n진입가: {avg_buy_price:,.0f}원")
+                        return
+        except Exception as e:
+            print(f"❌ 기존 포지션 확인 실패: {e}")
 
     def fetch_candles(self, market, count=200):
         """캔들 데이터 수집"""
