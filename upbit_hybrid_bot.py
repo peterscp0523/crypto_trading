@@ -135,7 +135,11 @@ class UpbitHybridBot:
     def fetch_candles(self, market, count=200):
         """캔들 데이터 수집"""
         try:
-            candles = self.upbit.get_minute_candles(market, count=count, unit=self.timeframe)
+            url = f"https://api.upbit.com/v1/candles/minutes/{self.timeframe}"
+            params = {"market": market, "count": count}
+            response = requests.get(url, params=params)
+            candles = response.json()
+
             if not candles:
                 return None
 
