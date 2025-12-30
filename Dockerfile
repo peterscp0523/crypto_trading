@@ -23,4 +23,4 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN chmod +x upbit_hybrid_bot.py
 
 # 실제 거래 봇 실행 (하이브리드 전략: BOX + TREND)
-CMD ["python", "-u", "upbit_hybrid_bot.py", "live", "5"]
+CMD ["python", "-u", "upbit_hybrid_bot.py", "live", "1"]
