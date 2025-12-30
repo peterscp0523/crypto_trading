@@ -386,6 +386,7 @@ class UpbitHybridBot:
             markets = [m['market'] for m in all_markets if m['market'].startswith('KRW-')]
 
             qualified = []
+            print(f"\n🔍 스캔 시작: {len(markets)}개 코인")
 
             for market in markets:
                 df = self.fetch_candles(market, count=200)
@@ -405,7 +406,16 @@ class UpbitHybridBot:
                 elif mode == 'BOX':
                     entry_signal = self.check_entry_box(latest)
 
+                # 메트릭 로그 출력
+                box_pos = latest.get('box_position', 0)
+                rsi = latest.get('rsi', 0)
+                volume_ratio = latest.get('volume_ratio', 0)
+                slope = latest.get('slope_20ma', 0)
+
+                log_msg = f"{market}: 가격={latest['close']:,.0f}, RSI={rsi:.1f}, 박스={box_pos:.1f}%, 거래량비={volume_ratio:.2f}, 기울기={slope:.4f}, 모드={mode}"
+
                 if entry_signal:
+                    print(f"✅ {log_msg} -> 진입신호")
                     qualified.append({
                         'market': market,
                         'price': latest['close'],
@@ -413,8 +423,12 @@ class UpbitHybridBot:
                         'slope': latest['slope_20ma'],
                         'rsi': latest['rsi']
                     })
+                else:
+                    print(f"   {log_msg}")
 
                 time.sleep(0.1)
+
+            print(f"📊 스캔 완료: {len(markets)}개 중 {len(qualified)}개 진입신호\n")
 
             if qualified:
                 qualified.sort(key=lambda x: abs(x['slope']), reverse=True)
