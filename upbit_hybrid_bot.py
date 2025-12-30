@@ -454,8 +454,19 @@ class UpbitHybridBot:
         else:
             # 실거래 매수
             try:
-                buy_amount = self.balance_krw * 0.9995
-                print(f"💳 매수 시도: {market}, 금액: {buy_amount:,.0f}원")
+                # 실시간 잔고 조회
+                real_balance = self.get_account_balance()
+                krw_only = 0
+
+                # KRW 잔고만 추출
+                accounts = self.upbit.get_accounts()
+                for account in accounts:
+                    if account['currency'] == 'KRW':
+                        krw_only = float(account['balance'])
+                        break
+
+                buy_amount = krw_only * 0.9995
+                print(f"💳 매수 시도: {market}, KRW 잔고: {krw_only:,.0f}원, 매수 금액: {buy_amount:,.0f}원")
 
                 result = self.upbit.buy_market_order(market, buy_amount)
 
