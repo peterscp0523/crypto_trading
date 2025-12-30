@@ -583,8 +583,16 @@ class UpbitHybridBot:
                                 success, profit = self.execute_sell(latest['close'], ratio=0.5)
                                 if success:
                                     profit_pct = (profit / self.initial_balance) * 100
+
+                                    # 실거래는 실제 잔고 조회
+                                    if not self.dry_run:
+                                        current_total = self.get_account_balance()
+                                    else:
+                                        current_total = self.balance_krw + self.position['quantity'] * latest['close']
+
+                                    total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
                                     print(f"💰 부분 익절 (+{profit_pct:.2f}%)")
-                                    self.telegram.send(f"💰 부분 익절 50%\n수익: +{profit_pct:.2f}%")
+                                    self.telegram.send(f"💰 부분 익절 50%\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
                             else:
                                 success, profit = self.execute_sell(latest['close'], ratio=1.0)
                                 if success:
@@ -598,7 +606,7 @@ class UpbitHybridBot:
 
                                     total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
                                     print(f"📊 전체 청산 ({reason}): +{profit_pct:.2f}% | 누적: +{total_return:.2f}%")
-                                    self.telegram.send(f"📊 매도 ({reason})\n수익: +{profit_pct:.2f}%\n누적: +{total_return:.2f}%")
+                                    self.telegram.send(f"📊 매도 ({reason})\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
 
                 time.sleep(1)
 
@@ -614,13 +622,27 @@ class UpbitHybridBot:
 
     def get_status(self):
         """상태 조회"""
+        # 실거래는 실제 잔고 조회, 시뮬레이션은 계산
+        if not self.dry_run:
+            current_total = self.get_account_balance()
+        else:
+            if self.position:
+                df = self.fetch_candles(self.position['market'], count=200)
+                if df is not None:
+                    current_price = df.iloc[-1]['close']
+                    current_total = self.balance_krw + self.position['quantity'] * current_price
+                else:
+                    current_total = self.balance_krw
+            else:
+                current_total = self.balance_krw
+
+        total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
+
         if self.position:
             df = self.fetch_candles(self.position['market'], count=200)
             if df is not None:
                 current_price = df.iloc[-1]['close']
                 profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
-                total_value = self.balance_krw + self.position['quantity'] * current_price
-                total_return = ((total_value - self.initial_balance) / self.initial_balance) * 100
 
                 return f"""📊 현재 상태
 모드: {self.current_mode}
@@ -628,14 +650,14 @@ class UpbitHybridBot:
 진입가: {self.position['entry_price']:,.0f}원
 현재가: {current_price:,.0f}원
 수익률: {profit_pct:+.2f}%
+총 자산: {current_total:,.0f}원
 누적 수익률: {total_return:+.2f}%
 """
         else:
-            total_return = ((self.balance_krw - self.initial_balance) / self.initial_balance) * 100
             return f"""📊 현재 상태
 모드: {self.current_mode}
 포지션: 없음
-잔고: {self.balance_krw:,.0f}원
+총 자산: {current_total:,.0f}원
 누적 수익률: {total_return:+.2f}%
 """
 
