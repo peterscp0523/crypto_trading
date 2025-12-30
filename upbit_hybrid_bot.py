@@ -356,35 +356,43 @@ class UpbitHybridBot:
         profit_pct = ((row['close'] - entry_price) / entry_price) * 100
 
         if profit_pct <= -0.7:
-            return True, "손절"
+            details = f"손절 (수익률: {profit_pct:.2f}% ≤ -0.7%)"
+            return True, "손절", details
 
         if self.partial_sold:
             if profit_pct >= 3.0:
-                return True, "목표 익절"
+                details = f"목표 익절 (수익률: {profit_pct:.2f}% ≥ 3.0%, 부분매도 후)"
+                return True, "목표 익절", details
             if row['close'] < row['sma20']:
-                return True, "20MA 이탈"
+                details = f"20MA 이탈 (현재가: {row['close']:,.0f}원 < 20MA: {row['sma20']:,.0f}원, 부분매도 후)"
+                return True, "20MA 이탈", details
         elif profit_pct >= 1.5:
-            return True, "부분 익절"
+            details = f"부분 익절 (수익률: {profit_pct:.2f}% ≥ 1.5%)"
+            return True, "부분 익절", details
 
-        return False, None
+        return False, None, None
 
     def check_exit_box(self, row, entry_price):
         """박스권 전략 청산"""
         profit_pct = ((row['close'] - entry_price) / entry_price) * 100
 
         if profit_pct <= -1.0:
-            return True, "손절"
+            details = f"손절 (수익률: {profit_pct:.2f}% ≤ -1.0%)"
+            return True, "손절", details
 
         if not pd.isna(row['box_position']) and row['box_position'] > 70 and profit_pct >= 1.5:
-            return True, "박스 상단 익절"
+            details = f"박스 상단 익절 (박스 위치: {row['box_position']:.1f}% > 70%, 수익률: {profit_pct:.2f}% ≥ 1.5%)"
+            return True, "박스 상단 익절", details
 
         if not pd.isna(row['rsi']) and row['rsi'] > 70 and profit_pct >= 1.0:
-            return True, "RSI 과매수 익절"
+            details = f"RSI 과매수 익절 (RSI: {row['rsi']:.1f} > 70, 수익률: {profit_pct:.2f}% ≥ 1.0%)"
+            return True, "RSI 과매수 익절", details
 
         if profit_pct >= 2.5:
-            return True, "목표 익절"
+            details = f"목표 익절 (수익률: {profit_pct:.2f}% ≥ 2.5%)"
+            return True, "목표 익절", details
 
-        return False, None
+        return False, None, None
 
     def scan_markets(self):
         """코인 스캔"""
@@ -658,13 +666,13 @@ class UpbitHybridBot:
                             self.current_mode = new_mode
 
                         # 청산 체크 - 두 가지 전략 모두 확인 (먼저 충족되는 조건 사용)
-                        should_exit, reason = (None, None)
+                        should_exit, reason, exit_details = (None, None, None)
 
                         # BOX 전략 청산 조건
-                        box_exit, box_reason = self.check_exit_box(latest, self.position['entry_price'])
+                        box_exit, box_reason, box_details = self.check_exit_box(latest, self.position['entry_price'])
 
                         # TREND 전략 청산 조건
-                        trend_exit, trend_reason = self.check_exit_trend(latest, self.position['entry_price'])
+                        trend_exit, trend_reason, trend_details = self.check_exit_trend(latest, self.position['entry_price'])
 
                         # 기존 포지션은 손절 제외 (언제/왜 샀는지 모르므로)
                         is_existing = self.position.get('is_existing', False)
@@ -672,15 +680,17 @@ class UpbitHybridBot:
                             if box_exit and box_reason == "손절":
                                 box_exit = False
                                 box_reason = None
+                                box_details = None
                             if trend_exit and trend_reason == "손절":
                                 trend_exit = False
                                 trend_reason = None
+                                trend_details = None
 
                         # 둘 중 하나라도 청산 신호면 매도 (보수적)
                         if box_exit:
-                            should_exit, reason = box_exit, f"BOX: {box_reason}"
+                            should_exit, reason, exit_details = box_exit, f"BOX: {box_reason}", box_details
                         elif trend_exit:
-                            should_exit, reason = trend_exit, f"TREND: {trend_reason}"
+                            should_exit, reason, exit_details = trend_exit, f"TREND: {trend_reason}", trend_details
 
                         if should_exit:
                             if reason == "부분 익절":
@@ -695,8 +705,10 @@ class UpbitHybridBot:
                                         current_total = self.balance_krw + self.position['quantity'] * latest['close']
 
                                     total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
-                                    print(f"💰 부분 익절 (+{profit_pct:.2f}%)")
-                                    self.telegram.send(f"💰 부분 익절 50%\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
+
+                                    log_msg = f"💰 부분 익절 (+{profit_pct:.2f}%)\n조건: {exit_details}"
+                                    print(log_msg)
+                                    self.telegram.send(f"💰 부분 익절 50%\n조건: {exit_details}\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
                             else:
                                 success, profit = self.execute_sell(latest['close'], ratio=1.0)
                                 if success:
@@ -709,8 +721,10 @@ class UpbitHybridBot:
                                         current_total = self.balance_krw
 
                                     total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
-                                    print(f"📊 전체 청산 ({reason}): +{profit_pct:.2f}% | 누적: +{total_return:.2f}%")
-                                    self.telegram.send(f"📊 매도 ({reason})\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
+
+                                    log_msg = f"📊 전체 청산 ({reason}): +{profit_pct:.2f}% | 누적: +{total_return:.2f}%\n조건: {exit_details}"
+                                    print(log_msg)
+                                    self.telegram.send(f"📊 매도 ({reason})\n조건: {exit_details}\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
 
                 time.sleep(1)
 
