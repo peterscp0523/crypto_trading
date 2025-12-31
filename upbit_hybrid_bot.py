@@ -337,32 +337,36 @@ class UpbitHybridBot:
         return uptrend and above_200ma and near_20ma
 
     def check_entry_box(self, row):
-        """박스권 전략 진입 (반등 확인 추가)"""
+        """박스권 전략 진입 (보수적 개선)"""
         if pd.isna(row['box_position']) or pd.isna(row['rsi']):
             return False
 
-        # 1. 박스 하단 (10-25%로 범위 축소)
-        at_bottom = 10 <= row['box_position'] <= 25
+        # 1. 박스 위치: 15-35% (너무 낮지 않은 구간)
+        at_bottom = 15 <= row['box_position'] <= 35
 
-        # 2. RSI 과매도 (< 35)
-        rsi_oversold = row['rsi'] < 35
+        # 2. RSI: 30-45 구간 (과매도에서 회복 중)
+        rsi_recovering = 30 <= row['rsi'] <= 45
 
-        # 3. 반등 확인: 현재가가 저가보다 높음 (바닥에서 올라오는 중)
-        bouncing = row['close'] > row['low']
+        # 3. 반등 확인: 양봉 + 저가 상승
+        price_rising = row['close'] > row['open']  # 양봉
 
-        # 4. 거래량 감소 (매도 압력 소진, 선택적)
+        # 4. 거래량: 평균 수준 (0.8 ~ 1.5배)
         volume_ok = True
         if not pd.isna(row.get('volume_ratio')):
-            # 거래량이 평균보다 너무 많지 않음 (패닉 매도 아님)
-            volume_ok = row['volume_ratio'] < 2.0
+            # 너무 적지도 많지도 않음
+            volume_ok = 0.8 <= row['volume_ratio'] <= 1.5
 
-        # 5. 20MA 기울기 체크: 급격한 하락 중이 아님 (추가 조건)
-        not_falling = True
+        # 5. 20MA 안정화: -0.3% 이상 (하락세 둔화)
+        ma_stabilizing = True
         if not pd.isna(row.get('slope_20ma')):
-            # 20MA 기울기가 -0.5% 이상 (너무 가파른 하락 중이 아님)
-            not_falling = row['slope_20ma'] > -0.5
+            ma_stabilizing = row['slope_20ma'] > -0.3
 
-        return at_bottom and rsi_oversold and bouncing and volume_ok and not_falling
+        # 6. 200MA 위에 있음 (장기 추세 확인)
+        above_200ma = True
+        if not pd.isna(row.get('sma200')):
+            above_200ma = row['close'] > row['sma200']
+
+        return at_bottom and rsi_recovering and price_rising and volume_ok and ma_stabilizing and above_200ma
 
     def check_exit_trend(self, row, entry_price):
         """추세 전략 청산"""
@@ -389,8 +393,8 @@ class UpbitHybridBot:
         """박스권 전략 청산"""
         profit_pct = ((row['close'] - entry_price) / entry_price) * 100
 
-        if profit_pct <= -1.0:
-            details = f"손절 (수익률: {profit_pct:.2f}% ≤ -1.0%)"
+        if profit_pct <= -0.7:
+            details = f"손절 (수익률: {profit_pct:.2f}% ≤ -0.7%)"
             return True, "손절", details
 
         if not pd.isna(row['box_position']) and row['box_position'] > 70 and profit_pct >= 1.5:
@@ -732,18 +736,6 @@ class UpbitHybridBot:
 
                         # TREND 전략 청산 조건
                         trend_exit, trend_reason, trend_details = self.check_exit_trend(latest, self.position['entry_price'])
-
-                        # 기존 포지션은 손절 제외 (언제/왜 샀는지 모르므로)
-                        is_existing = self.position.get('is_existing', False)
-                        if is_existing:
-                            if box_exit and box_reason == "손절":
-                                box_exit = False
-                                box_reason = None
-                                box_details = None
-                            if trend_exit and trend_reason == "손절":
-                                trend_exit = False
-                                trend_reason = None
-                                trend_details = None
 
                         # 둘 중 하나라도 청산 신호면 매도 (보수적)
                         if box_exit:
