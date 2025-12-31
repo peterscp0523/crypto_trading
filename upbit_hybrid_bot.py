@@ -349,7 +349,13 @@ class UpbitHybridBot:
             # 거래량이 평균보다 너무 많지 않음 (패닉 매도 아님)
             volume_ok = row['volume_ratio'] < 2.0
 
-        return at_bottom and rsi_oversold and bouncing and volume_ok
+        # 5. 20MA 기울기 체크: 급격한 하락 중이 아님 (추가 조건)
+        not_falling = True
+        if not pd.isna(row.get('slope_20ma')):
+            # 20MA 기울기가 -0.5% 이상 (너무 가파른 하락 중이 아님)
+            not_falling = row['slope_20ma'] > -0.5
+
+        return at_bottom and rsi_oversold and bouncing and volume_ok and not_falling
 
     def check_exit_trend(self, row, entry_price):
         """추세 전략 청산"""
