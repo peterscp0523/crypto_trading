@@ -689,9 +689,27 @@ class UpbitHybridBot:
                         df = self.calculate_indicators(df)
                         latest = df.iloc[-1]
 
-                        # 현재 수익률 계산
+                        # 현재가
                         current_price = latest['close']
-                        profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
+
+                        # 실거래일 때는 업비트 avg_buy_price 기준 수익률 계산
+                        if not self.dry_run:
+                            try:
+                                accounts = self.upbit.get_accounts()
+                                upbit_avg_price = self.position['entry_price']  # 기본값
+
+                                for account in accounts:
+                                    if f"KRW-{account['currency']}" == self.position['market']:
+                                        upbit_avg_price = float(account.get('avg_buy_price', self.position['entry_price']))
+                                        break
+
+                                profit_pct = ((current_price - upbit_avg_price) / upbit_avg_price) * 100
+                            except:
+                                # API 오류 시 기존 진입가 사용
+                                profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
+                        else:
+                            # 시뮬레이션은 기존 진입가 사용
+                            profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
 
                         # 1분마다 상태 출력 (60초 = 60번 루프)
                         current_second = int(time.time()) % 60
