@@ -189,10 +189,17 @@ class UpbitHybridBot:
             if max_coin and max_value > 1000:
                 market = f"KRW-{max_coin['currency']}"
 
+                # 현재가 조회
+                df = self.fetch_candles(market, count=1)
+                current_price = df.iloc[-1]['close'] if df is not None and len(df) > 0 else max_coin['avg_buy_price']
+                profit_pct = ((current_price - max_coin['avg_buy_price']) / max_coin['avg_buy_price']) * 100
+
                 print(f"\n🔍 기존 포지션 발견!")
                 print(f"코인: {market}")
                 print(f"수량: {max_coin['balance']:.8f}개")
-                print(f"평균 매수가: {max_coin['avg_buy_price']:,.0f}원")
+                print(f"진입가: {max_coin['avg_buy_price']:,.0f}원")
+                print(f"현재가: {current_price:,.0f}원")
+                print(f"수익률: {profit_pct:+.2f}%")
                 print(f"평가금액: {max_value:,.0f}원")
 
                 # 포지션 설정 (기존 포지션임을 표시)
@@ -205,7 +212,7 @@ class UpbitHybridBot:
                     'is_existing': True  # 기존 포지션 플래그
                 }
 
-                self.telegram.send(f"📌 기존 포지션 인식\n코인: {market}\n진입가: {max_coin['avg_buy_price']:,.0f}원\n평가금액: {max_value:,.0f}원")
+                self.telegram.send(f"📌 기존 포지션 인식\n코인: {market}\n진입가: {max_coin['avg_buy_price']:,.0f}원\n현재가: {current_price:,.0f}원\n수익률: {profit_pct:+.2f}%\n평가금액: {max_value:,.0f}원")
         except Exception as e:
             print(f"❌ 기존 포지션 확인 실패: {e}")
 
@@ -740,9 +747,9 @@ class UpbitHybridBot:
 
                                     total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
 
-                                    log_msg = f"💰 부분 익절 (+{profit_pct:.2f}%)\n조건: {exit_details}"
+                                    log_msg = f"💰 부분 익절 ({profit_pct:+.2f}%)\n조건: {exit_details}"
                                     print(log_msg)
-                                    self.telegram.send(f"💰 부분 익절 50%\n조건: {exit_details}\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
+                                    self.telegram.send(f"💰 부분 익절 50%\n조건: {exit_details}\n수익: {profit_pct:+.2f}%\n총 자산: {current_total:,.0f}원\n누적: {total_return:+.2f}%")
                             else:
                                 success, profit = self.execute_sell(latest['close'], ratio=1.0)
                                 if success:
@@ -756,9 +763,9 @@ class UpbitHybridBot:
 
                                     total_return = ((current_total - self.initial_balance) / self.initial_balance) * 100
 
-                                    log_msg = f"📊 전체 청산 ({reason}): +{profit_pct:.2f}% | 누적: +{total_return:.2f}%\n조건: {exit_details}"
+                                    log_msg = f"📊 전체 청산 ({reason}): {profit_pct:+.2f}% | 누적: {total_return:+.2f}%\n조건: {exit_details}"
                                     print(log_msg)
-                                    self.telegram.send(f"📊 매도 ({reason})\n조건: {exit_details}\n수익: +{profit_pct:.2f}%\n총 자산: {current_total:,.0f}원\n누적: +{total_return:.2f}%")
+                                    self.telegram.send(f"📊 매도 ({reason})\n조건: {exit_details}\n수익: {profit_pct:+.2f}%\n총 자산: {current_total:,.0f}원\n누적: {total_return:+.2f}%")
 
                 time.sleep(1)
 
