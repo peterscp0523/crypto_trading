@@ -99,27 +99,16 @@ class Upbit4HRangeBot:
         self.running = True
 
         # 자산 관리
-        if initial_balance_krw is None:
-            if not dry_run:
-                import os.path
-                initial_balance_file = 'initial_balance.txt'
-
-                if os.path.exists(initial_balance_file):
-                    with open(initial_balance_file, 'r') as f:
-                        self.initial_balance = float(f.read().strip())
-                else:
-                    real_balance = self.get_account_balance()
-                    self.initial_balance = real_balance
-                    with open(initial_balance_file, 'w') as f:
-                        f.write(str(self.initial_balance))
-
-                self.balance_krw = self.get_account_balance()
-            else:
-                self.balance_krw = 1000000
-                self.initial_balance = 1000000
+        if not dry_run:
+            # 실거래: 현재 보유 자산을 초기 자본으로 설정
+            real_balance = self.get_account_balance()
+            self.initial_balance = real_balance
+            self.balance_krw = real_balance
+            print(f"💰 실거래 모드: 현재 보유 자산 {real_balance:,.0f}원을 초기 자본으로 설정")
         else:
-            self.balance_krw = initial_balance_krw
-            self.initial_balance = initial_balance_krw
+            # 시뮬레이션: 100만원으로 시작
+            self.balance_krw = 1000000
+            self.initial_balance = 1000000
 
         # 전략 상태
         self.position = None
@@ -698,7 +687,7 @@ if __name__ == "__main__":
         market='KRW-BTC',
         telegram_token=TELEGRAM_TOKEN,
         telegram_chat_id=TELEGRAM_CHAT_ID,
-        dry_run=True  # 시뮬레이션 모드 (실거래는 False)
+        dry_run=False  # 실거래 모드
     )
 
     bot.run()
