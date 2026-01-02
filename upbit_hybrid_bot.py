@@ -601,6 +601,9 @@ class Upbit4HRangeBot:
         """봇 실행"""
         print("\n🤖 봇 시작...\n")
 
+        # 봇 시작 시 stop_requested 플래그 초기화
+        self.telegram.stop_requested = False
+
         try:
             while self.running and not self.telegram.stop_requested:
                 # 텔레그램 명령어 확인
