@@ -30,11 +30,30 @@ class TelegramNotifier:
         self.token = token or os.getenv('TELEGRAM_TOKEN')
         self.chat_id = chat_id or os.getenv('TELEGRAM_CHAT_ID')
         self.enabled = self.token and self.chat_id
-        self.last_update_id = 0
+        self.update_id_file = 'telegram_last_update_id.txt'
+        self.last_update_id = self._load_last_update_id()
         self.stop_requested = False  # 정지 요청 플래그
 
         if not self.enabled:
             print("⚠️ 텔레그램 설정 없음")
+
+    def _load_last_update_id(self):
+        """마지막 업데이트 ID 파일에서 로드"""
+        try:
+            if os.path.exists(self.update_id_file):
+                with open(self.update_id_file, 'r') as f:
+                    return int(f.read().strip())
+        except:
+            pass
+        return 0
+
+    def _save_last_update_id(self):
+        """마지막 업데이트 ID 파일에 저장"""
+        try:
+            with open(self.update_id_file, 'w') as f:
+                f.write(str(self.last_update_id))
+        except:
+            pass
 
     def send(self, message):
         """메시지 전송"""
@@ -65,6 +84,7 @@ class TelegramNotifier:
                 if data.get('result'):
                     for update in data['result']:
                         self.last_update_id = update['update_id']
+                        self._save_last_update_id()  # 즉시 파일에 저장
                         if 'message' in update and 'text' in update['message']:
                             command = update['message']['text'].strip().lower()
                             if command == '/stop':

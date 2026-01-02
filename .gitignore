@@ -58,3 +58,6 @@ backtest_results.csv
 backtest_trades.csv
 *.csv
 initial_balance.txt
+
+# 텔레그램 상태 파일
+telegram_last_update_id.txt
