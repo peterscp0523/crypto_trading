@@ -707,7 +707,7 @@ if __name__ == "__main__":
     bot = Upbit4HRangeBot(
         access_key=ACCESS_KEY,
         secret_key=SECRET_KEY,
-        market='KRW-BTC',
+        market='KRW-SOL',  # 솔라나로 변경 (백테스트 결과 +116.76% vs BTC +3.24%)
         telegram_token=TELEGRAM_TOKEN,
         telegram_chat_id=TELEGRAM_CHAT_ID,
         dry_run=False  # 실거래 모드
