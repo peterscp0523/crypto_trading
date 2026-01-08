@@ -16,6 +16,82 @@ from datetime import datetime, timedelta
 import time
 import json
 import os
+import requests
+
+
+class TelegramNotifier:
+    """텔레그램 알림"""
+
+    def __init__(self, token=None, chat_id=None):
+        self.token = token or os.getenv('TELEGRAM_TOKEN')
+        self.chat_id = chat_id or os.getenv('TELEGRAM_CHAT_ID')
+        self.enabled = self.token and self.chat_id
+        self.update_id_file = 'telegram_last_update_id.txt'
+        self.last_update_id = self._load_last_update_id()
+        self.stop_requested = False
+
+        if not self.enabled:
+            print("⚠️ 텔레그램 설정 없음")
+
+    def _load_last_update_id(self):
+        """마지막 업데이트 ID 파일에서 로드"""
+        try:
+            if os.path.exists(self.update_id_file):
+                with open(self.update_id_file, 'r') as f:
+                    return int(f.read().strip())
+        except:
+            pass
+        return 0
+
+    def _save_last_update_id(self):
+        """마지막 업데이트 ID 파일에 저장"""
+        try:
+            with open(self.update_id_file, 'w') as f:
+                f.write(str(self.last_update_id))
+        except:
+            pass
+
+    def send(self, message):
+        """메시지 전송"""
+        if not self.enabled:
+            print(f"[TELEGRAM] {message}")
+            return
+
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            data = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"}
+            response = requests.post(url, json=data, timeout=5)
+            return response.ok
+        except requests.exceptions.RequestException:
+            pass
+
+    def check_commands(self):
+        """명령어 확인 및 처리"""
+        if not self.enabled:
+            return None
+
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/getUpdates"
+            params = {"offset": self.last_update_id + 1, "timeout": 1}
+            response = requests.get(url, params=params, timeout=5)
+
+            if response.ok:
+                data = response.json()
+                if data.get('result'):
+                    for update in data['result']:
+                        self.last_update_id = update['update_id']
+                        self._save_last_update_id()
+                        if 'message' in update and 'text' in update['message']:
+                            command = update['message']['text'].strip().lower()
+                            if command == '/stop':
+                                self.stop_requested = True
+                                return 'stop'
+                            elif command in ['/status', '/help']:
+                                return command
+        except requests.exceptions.RequestException:
+            pass
+
+        return None
 
 
 class LiveTradingBot:
@@ -63,6 +139,19 @@ class LiveTradingBot:
 
         # 마지막 리밸런싱 시간
         self.last_rebalance = None
+
+        # 텔레그램 알림
+        self.telegram = TelegramNotifier()
+        self.telegram.send(
+            f"🤖 <b>Ultimate 전략 봇 시작</b>\n\n"
+            f"💰 초기 자본: {self.initial_balance:,.0f}원\n"
+            f"🪙 거래 코인: {', '.join(self.coins)}\n\n"
+            f"📊 Layer 배분:\n"
+            f"  - Buy & Hold: 60%\n"
+            f"  - Momentum Trend: 25%\n"
+            f"  - Momentum Swing: 10%\n"
+            f"  - Volatility: 5%"
+        )
 
 
     def get_total_balance(self):
@@ -282,7 +371,9 @@ class LiveTradingBot:
                         'layer': 'buy_hold'
                     }
                     self.save_positions()
+                    msg = f"✅ <b>BUY & HOLD 매수</b>\n\n🪙 {coin}\n💰 {target_amount:,.0f}원\n📊 가격: {df.iloc[-1]['close']:,.0f}원"
                     print(f"✅ BUY & HOLD 매수: {target_amount:,.0f}원")
+                    self.telegram.send(msg)
 
 
     def execute_momentum_trend(self, coin, market, df, score):
@@ -318,7 +409,9 @@ class LiveTradingBot:
                         'layer': 'momentum_trend'
                     }
                     self.save_positions()
+                    msg = f"✅ <b>MOMENTUM TREND 매수</b>\n\n🪙 {coin}\n💰 {target_amount:,.0f}원\n📊 가격: {current_price:,.0f}원\n⭐ 스코어: {score}점\n🛑 손절: {stop_loss:,.0f}원"
                     print(f"✅ MOMENTUM TREND 매수: {target_amount:,.0f}원 (스코어: {score})")
+                    self.telegram.send(msg)
 
         # 청산
         elif pos is not None:
@@ -333,7 +426,10 @@ class LiveTradingBot:
 
                     if order:
                         profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+                        reason = "손절" if current_price <= pos['stop_loss'] else f"스코어 {score}점"
+                        msg = f"💰 <b>MOMENTUM TREND 매도</b>\n\n🪙 {coin}\n📊 가격: {current_price:,.0f}원\n📈 수익률: {profit_pct:+.2f}%\n💡 이유: {reason}"
                         print(f"✅ MOMENTUM TREND 매도: 수익률 {profit_pct:+.2f}%")
+                        self.telegram.send(msg)
 
                         self.positions[coin]['momentum_trend'] = None
                         self.save_positions()
@@ -375,7 +471,9 @@ class LiveTradingBot:
                         'layer': 'momentum_swing'
                     }
                     self.save_positions()
+                    msg = f"✅ <b>MOMENTUM SWING 매수</b>\n\n🪙 {coin}\n💰 {target_amount:,.0f}원\n📊 가격: {current_price:,.0f}원\n⭐ 스코어: {score}점"
                     print(f"✅ MOMENTUM SWING 매수: {target_amount:,.0f}원")
+                    self.telegram.send(msg)
 
         # 청산
         elif pos is not None:
@@ -390,7 +488,15 @@ class LiveTradingBot:
 
                     if order:
                         profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+                        if profit_target:
+                            reason = "익절 +15%"
+                        elif current_price <= pos['stop_loss']:
+                            reason = "손절"
+                        else:
+                            reason = f"스코어 {score}점"
+                        msg = f"💰 <b>MOMENTUM SWING 매도</b>\n\n🪙 {coin}\n📊 가격: {current_price:,.0f}원\n📈 수익률: {profit_pct:+.2f}%\n💡 이유: {reason}"
                         print(f"✅ MOMENTUM SWING 매도: 수익률 {profit_pct:+.2f}%")
+                        self.telegram.send(msg)
 
                         self.positions[coin]['momentum_swing'] = None
                         self.save_positions()
@@ -432,7 +538,9 @@ class LiveTradingBot:
                             'layer': 'volatility'
                         }
                         self.save_positions()
+                        msg = f"✅ <b>VOLATILITY 매수</b>\n\n🪙 {coin}\n💰 {target_amount:,.0f}원\n📊 가격: {current_price:,.0f}원\n🎯 목표: {current_price + atr * 3:,.0f}원"
                         print(f"✅ VOLATILITY 매수: {target_amount:,.0f}원")
+                        self.telegram.send(msg)
 
         # 청산
         elif pos is not None:
@@ -444,8 +552,10 @@ class LiveTradingBot:
 
                     if order:
                         profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
-                        reason = 'target' if current_price >= pos['target'] else 'stop'
+                        reason = '익절 목표달성' if current_price >= pos['target'] else '손절'
+                        msg = f"💰 <b>VOLATILITY 매도</b>\n\n🪙 {coin}\n📊 가격: {current_price:,.0f}원\n📈 수익률: {profit_pct:+.2f}%\n💡 이유: {reason}"
                         print(f"✅ VOLATILITY 매도: 수익률 {profit_pct:+.2f}% ({reason})")
+                        self.telegram.send(msg)
 
                         self.positions[coin]['volatility'] = None
                         self.save_positions()
@@ -518,6 +628,24 @@ class LiveTradingBot:
 
         while True:
             try:
+                # 텔레그램 명령어 체크
+                cmd = self.telegram.check_commands()
+                if cmd == 'stop':
+                    self.telegram.send("🛑 <b>봇 중지 요청됨</b>\n\n봇을 종료합니다.")
+                    break
+                elif cmd == '/status':
+                    total = self.get_total_balance()
+                    profit = total - self.initial_balance
+                    profit_pct = (profit / self.initial_balance) * 100
+                    status_msg = (
+                        f"📊 <b>봇 상태</b>\n\n"
+                        f"💰 총 자산: {total:,.0f}원\n"
+                        f"📈 수익: {profit:+,.0f}원 ({profit_pct:+.2f}%)\n"
+                        f"🪙 거래 코인: {', '.join(self.coins)}\n"
+                        f"⏰ 체크 주기: 4시간"
+                    )
+                    self.telegram.send(status_msg)
+
                 print(f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
                 # 각 코인별 전략 실행
@@ -529,6 +657,7 @@ class LiveTradingBot:
                 if self.last_rebalance is None or \
                    (datetime.now() - self.last_rebalance).days >= 30:
                     self.rebalance()
+                    self.telegram.send("📊 <b>월간 리밸런싱 완료</b>\n\n각 코인 비중이 20%로 조정되었습니다.")
 
                 # 현재 총 자산 출력
                 total = self.get_total_balance()
@@ -539,6 +668,15 @@ class LiveTradingBot:
                 print(f"💰 현재 총 자산: {total:,.0f}원")
                 print(f"📈 수익: {profit:+,.0f}원 ({profit_pct:+.2f}%)")
                 print(f"{'='*80}\n")
+
+                # 일일 리포트 텔레그램 전송
+                report_msg = (
+                    f"📊 <b>일일 리포트</b>\n\n"
+                    f"💰 총 자산: {total:,.0f}원\n"
+                    f"📈 수익: {profit:+,.0f}원 ({profit_pct:+.2f}%)\n"
+                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                )
+                self.telegram.send(report_msg)
 
                 # 4시간 대기
                 print("😴 다음 체크까지 4시간 대기...")
