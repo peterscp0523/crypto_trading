@@ -696,27 +696,38 @@ def main():
     print("🤖 실전 자동매매 봇 설정")
     print("="*80)
 
-    # API 키 입력
-    access_key = input("Access Key: ").strip()
-    secret_key = input("Secret Key: ").strip()
+    # 환경변수에서 API 키 읽기 (Docker 환경)
+    access_key = os.getenv('UPBIT_ACCESS_KEY')
+    secret_key = os.getenv('UPBIT_SECRET_KEY')
 
+    # 환경변수가 없으면 대화형으로 입력받기 (로컬 실행)
     if not access_key or not secret_key:
-        print("❌ API 키를 입력하세요.")
-        return
+        print("\n⚠️ 환경변수가 설정되지 않았습니다.")
+        print("대화형 모드로 전환합니다.\n")
+        access_key = input("Access Key: ").strip()
+        secret_key = input("Secret Key: ").strip()
 
-    # 봇 생성 및 실행
+        if not access_key or not secret_key:
+            print("❌ API 키를 입력하세요.")
+            return
+
+    # 봇 생성
     bot = LiveTradingBot(access_key, secret_key)
 
     # 확인
     print(f"\n현재 총 자산: {bot.get_total_balance():,.0f}원")
     print(f"초기 자본으로 설정: {bot.initial_balance:,.0f}원")
 
-    confirm = input("\n봇을 시작하시겠습니까? (yes/no): ").strip().lower()
-
-    if confirm == 'yes':
+    # Docker 환경이면 자동 시작, 로컬이면 확인 후 시작
+    if os.getenv('UPBIT_ACCESS_KEY'):
+        print("\n🚀 Docker 환경 감지 - 자동 시작")
         bot.run()
     else:
-        print("❌ 봇 시작 취소")
+        confirm = input("\n봇을 시작하시겠습니까? (yes/no): ").strip().lower()
+        if confirm == 'yes':
+            bot.run()
+        else:
+            print("❌ 봇 시작 취소")
 
 
 if __name__ == "__main__":
