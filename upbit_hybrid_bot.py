@@ -1,716 +1,585 @@
 #!/usr/bin/env python3
 """
-업비트 4시간 레인지 재진입 자동매매 봇
+실전 자동매매 봇 - 멀티 코인 다층 전략
 
-전략:
-- 09:00~13:00 KST 4시간 캔들로 레인지 설정
-- 레인지 이탈 후 재진입 시 역방향 진입 (Long/Short)
-- 손익비 최소 1:2 유지
-- 연속 2손절 또는 하루 3회 거래 제한
-
-텔레그램 명령어:
-- /status: 현재 상태 확인
-- /stop: 봇 중지
-- /help: 도움말
+핵심 원리:
+1. 다층 방어 시스템 (Buy & Hold + Momentum + Volatility)
+2. 멀티 코인 분산 (BTC, ETH, SOL, XRP, ADA)
+3. 동적 리밸런싱 (월 1회)
+4. 엄격한 리스크 관리 (각 Layer 독립적 손절)
 """
-import os
-import sys
+
+import pyupbit
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
-import requests
-from upbit_api import UpbitAPI
+import json
+import os
 
 
-class TelegramNotifier:
-    """텔레그램 알림"""
+class LiveTradingBot:
+    """실전 자동매매 봇"""
 
-    def __init__(self, token=None, chat_id=None):
-        self.token = token or os.getenv('TELEGRAM_TOKEN')
-        self.chat_id = chat_id or os.getenv('TELEGRAM_CHAT_ID')
-        self.enabled = self.token and self.chat_id
-        self.update_id_file = 'telegram_last_update_id.txt'
-        self.last_update_id = self._load_last_update_id()
-        self.stop_requested = False  # 정지 요청 플래그
-
-        if not self.enabled:
-            print("⚠️ 텔레그램 설정 없음")
-
-    def _load_last_update_id(self):
-        """마지막 업데이트 ID 파일에서 로드"""
-        try:
-            if os.path.exists(self.update_id_file):
-                with open(self.update_id_file, 'r') as f:
-                    return int(f.read().strip())
-        except:
-            pass
-        return 0
-
-    def _save_last_update_id(self):
-        """마지막 업데이트 ID 파일에 저장"""
-        try:
-            with open(self.update_id_file, 'w') as f:
-                f.write(str(self.last_update_id))
-        except:
-            pass
-
-    def send(self, message):
-        """메시지 전송"""
-        if not self.enabled:
-            print(f"[TELEGRAM] {message}")
-            return
-
-        try:
-            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            data = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"}
-            response = requests.post(url, json=data, timeout=5)
-            return response.ok
-        except requests.exceptions.RequestException:
-            pass
-
-    def check_commands(self):
-        """명령어 확인 및 처리"""
-        if not self.enabled:
-            return None
-
-        try:
-            url = f"https://api.telegram.org/bot{self.token}/getUpdates"
-            params = {"offset": self.last_update_id + 1, "timeout": 1}
-            response = requests.get(url, params=params, timeout=5)
-
-            if response.ok:
-                data = response.json()
-                if data.get('result'):
-                    for update in data['result']:
-                        self.last_update_id = update['update_id']
-                        self._save_last_update_id()  # 즉시 파일에 저장
-                        if 'message' in update and 'text' in update['message']:
-                            command = update['message']['text'].strip().lower()
-                            if command == '/stop':
-                                self.stop_requested = True
-                                return 'stop'
-                            elif command in ['/status', '/help']:
-                                return command
-        except requests.exceptions.RequestException:
-            pass
-
-        return None
-
-
-class Upbit4HRangeBot:
-    """업비트 4시간 레인지 재진입 봇"""
-
-    def __init__(self, access_key, secret_key, market='KRW-BTC',
-                 telegram_token=None, telegram_chat_id=None,
-                 dry_run=True, initial_balance_krw=None):
+    def __init__(self, access_key, secret_key, initial_balance=None):
         """
         초기화
 
         Args:
-            market: 거래 마켓 (기본: KRW-BTC)
-            dry_run: 시뮬레이션 모드 (True=가상거래, False=실거래)
-            initial_balance_krw: 초기 자본
+            access_key: 업비트 Access Key
+            secret_key: 업비트 Secret Key
+            initial_balance: 초기 자본 (None이면 현재 잔고 사용)
         """
-        self.upbit = UpbitAPI(access_key, secret_key)
-        self.telegram = TelegramNotifier(telegram_token, telegram_chat_id)
-        self.market = market
-        self.dry_run = dry_run
-        self.running = True
+        self.upbit = pyupbit.Upbit(access_key, secret_key)
 
-        # 자산 관리
-        if not dry_run:
-            # 실거래: 현재 보유 자산을 초기 자본으로 설정
-            real_balance = self.get_account_balance()
-            self.initial_balance = real_balance
-            self.balance_krw = real_balance
-            print(f"💰 실거래 모드: 현재 보유 자산 {real_balance:,.0f}원을 초기 자본으로 설정")
+        # 거래할 코인 목록
+        self.coins = ['BTC', 'ETH', 'SOL', 'XRP', 'ADA']
+        self.markets = [f'KRW-{coin}' for coin in self.coins]
+
+        # 코인별 균등 배분 (20% 씩)
+        self.coin_allocation = {coin: 0.20 for coin in self.coins}
+
+        # Layer별 배분
+        self.layer_allocation = {
+            'buy_hold': 0.60,      # 60%: 장기 보유
+            'momentum_trend': 0.25, # 25%: 강한 모멘텀
+            'momentum_swing': 0.10, # 10%: 중간 모멘텀
+            'volatility': 0.05      # 5%: 변동성 브레이크아웃
+        }
+
+        # 초기 자본 설정
+        if initial_balance is None:
+            self.initial_balance = self.get_total_balance()
         else:
-            # 시뮬레이션: 100만원으로 시작
-            self.balance_krw = 1000000
-            self.initial_balance = 1000000
+            self.initial_balance = initial_balance
 
-        # 전략 상태
-        self.position = None
-        self.trades = []
-
-        # 일일 제한
-        self.current_date = None
-        self.daily_losses = 0
-        self.daily_trades = 0
-
-        # 4시간 레인지
-        self.range_high = None
-        self.range_low = None
-        self.has_broken_out = False
-        self.breakout_direction = None  # 'up' or 'down'
-        self.breakout_high = None
-        self.breakout_low = None
-
-        print(f"\n{'='*60}")
-        print(f"업비트 4시간 레인지 재진입 봇 시작")
-        print(f"{'='*60}")
-        print(f"마켓: {market}")
-        print(f"모드: {'🔴 실거래' if not dry_run else '🟢 시뮬레이션'}")
+        print(f"🤖 봇 초기화 완료")
         print(f"초기 자본: {self.initial_balance:,.0f}원")
-        print(f"{'='*60}\n")
+        print(f"거래 코인: {', '.join(self.coins)}")
 
-        self.telegram.send(f"🤖 4시간 레인지 봇 시작\n마켓: {market}\n초기 자본: {self.initial_balance:,.0f}원")
+        # 포지션 상태 파일
+        self.position_file = 'bot_positions.json'
+        self.positions = self.load_positions()
 
-        # 실거래 모드일 때 기존 보유 코인 확인
-        if not dry_run:
-            self.check_existing_position()
+        # 마지막 리밸런싱 시간
+        self.last_rebalance = None
 
-    def get_account_balance(self):
-        """계좌 잔고 조회"""
-        try:
-            accounts = self.upbit.get_accounts()
-            total_balance = 0
 
-            for account in accounts:
-                if account['currency'] == 'KRW':
-                    total_balance += float(account['balance'])
-                else:
-                    # 보유 코인 평가금액
-                    ticker = f"KRW-{account['currency']}"
-                    try:
-                        current_price = self.get_current_price(ticker)
-                        if current_price:
-                            coin_value = float(account['balance']) * current_price
-                            total_balance += coin_value
-                    except:
-                        pass
+    def get_total_balance(self):
+        """총 자산 계산 (KRW + 보유 코인 평가액)"""
+        balances = self.upbit.get_balances()
+        total = 0
 
-            return total_balance
-        except Exception as e:
-            print(f"❌ 잔고 조회 실패: {e}")
+        for balance in balances:
+            currency = balance['currency']
+            amount = float(balance['balance'])
+
+            if currency == 'KRW':
+                total += amount
+            else:
+                # 코인 현재가 조회
+                ticker = f'KRW-{currency}'
+                price = pyupbit.get_current_price(ticker)
+                if price:
+                    total += amount * price
+
+        return total
+
+
+    def load_positions(self):
+        """저장된 포지션 로드"""
+        if os.path.exists(self.position_file):
+            with open(self.position_file, 'r') as f:
+                return json.load(f)
+        else:
+            # 초기 포지션 구조
+            positions = {}
+            for coin in self.coins:
+                positions[coin] = {
+                    'buy_hold': None,
+                    'momentum_trend': None,
+                    'momentum_swing': None,
+                    'volatility': None
+                }
+            return positions
+
+
+    def save_positions(self):
+        """포지션 저장"""
+        with open(self.position_file, 'w') as f:
+            json.dump(self.positions, f, indent=2, default=str)
+
+
+    def calculate_momentum_score(self, df):
+        """
+        모멘텀 스코어 계산 (100점 만점)
+
+        구성:
+        - 다중 이동평균 배열: 40점
+        - 가격 모멘텀: 30점
+        - 볼륨 트렌드: 15점
+        - RSI: 15점
+        """
+        if len(df) < 200:
             return 0
 
-    def check_existing_position(self):
-        """기존 보유 코인 확인"""
-        try:
-            accounts = self.upbit.get_accounts()
-            currency = self.market.split('-')[1]
+        current = df.iloc[-1]
+        score = 0
 
-            for account in accounts:
-                if account['currency'] == currency:
-                    balance = float(account['balance'])
-                    if balance > 0:
-                        avg_buy_price = float(account['avg_buy_price'])
-                        current_price = self.get_current_price(self.market)
+        # 1. 이동평균 배열 (40점)
+        ma10 = df['close'].iloc[-10:].mean()
+        ma20 = df['close'].iloc[-20:].mean()
+        ma50 = df['close'].iloc[-50:].mean()
+        ma100 = df['close'].iloc[-100:].mean()
+        ma200 = df['close'].iloc[-200:].mean()
 
-                        print(f"\n⚠️ 기존 포지션 발견:")
-                        print(f"   코인: {currency}")
-                        print(f"   수량: {balance}")
-                        print(f"   평균 매수가: {avg_buy_price:,.0f}원")
-                        print(f"   현재가: {current_price:,.0f}원")
+        if current['close'] > ma10 > ma20 > ma50 > ma100 > ma200:
+            score += 40  # 완벽한 상승 배열
+        elif current['close'] > ma20 > ma50 > ma100:
+            score += 30
+        elif current['close'] > ma20 > ma50:
+            score += 20
+        elif current['close'] > ma20:
+            score += 10
 
-                        profit_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100
-                        print(f"   수익률: {profit_pct:.2f}%\n")
+        # 2. 가격 모멘텀 (30점)
+        ret_5d = (current['close'] - df.iloc[-6]['close']) / df.iloc[-6]['close']
+        ret_20d = (current['close'] - df.iloc[-21]['close']) / df.iloc[-21]['close']
+        ret_60d = (current['close'] - df.iloc[-61]['close']) / df.iloc[-61]['close']
 
-                        # 포지션 정보 저장 (손익 계산용)
-                        self.position = {
-                            'direction': 'long',  # 업비트는 롱만 가능
-                            'entry_price': avg_buy_price,
-                            'entry_time': datetime.now(),
-                            'quantity': balance,
-                            'stop_loss': None,  # 기존 포지션은 손절가 없음
-                            'take_profit': None
+        if ret_5d > 0 and ret_20d > 0 and ret_60d > 0:
+            score += 15
+            if ret_5d > ret_20d > ret_60d:  # 가속 모멘텀
+                score += 15
+
+        # 3. 볼륨 트렌드 (15점)
+        vol_ma20 = df['volume'].iloc[-20:].mean()
+        vol_ma50 = df['volume'].iloc[-50:].mean()
+
+        if current['volume'] > vol_ma20 > vol_ma50:
+            score += 15
+        elif current['volume'] > vol_ma20:
+            score += 10
+
+        # 4. RSI (15점)
+        rsi = self.calculate_rsi(df)
+        if 55 < rsi < 70:
+            score += 15
+        elif 50 < rsi < 75:
+            score += 10
+        elif rsi < 40:
+            score -= 20
+
+        return score
+
+
+    def calculate_rsi(self, df, period=14):
+        """RSI 계산"""
+        if len(df) < period + 1:
+            return 50
+
+        prices = df['close'].values[-period-1:]
+        deltas = np.diff(prices)
+
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+
+        avg_gain = np.mean(gains)
+        avg_loss = np.mean(losses)
+
+        if avg_loss == 0:
+            return 100
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        return rsi
+
+
+    def calculate_atr(self, df, period=14):
+        """ATR 계산"""
+        if len(df) < period + 1:
+            return df.iloc[-1]['high'] - df.iloc[-1]['low']
+
+        tr_list = []
+        for i in range(-period, 0):
+            high = df.iloc[i]['high']
+            low = df.iloc[i]['low']
+            prev_close = df.iloc[i-1]['close']
+
+            tr = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close)
+            )
+            tr_list.append(tr)
+
+        return np.mean(tr_list)
+
+
+    def execute_strategy(self, coin):
+        """
+        코인별 전략 실행
+
+        핵심 로직:
+        1. 4시간봉 데이터 조회
+        2. 모멘텀 스코어 계산
+        3. Layer별 진입/청산 판단
+        4. 주문 실행
+        """
+        market = f'KRW-{coin}'
+
+        # 4시간봉 데이터 (500개)
+        df = pyupbit.get_ohlcv(market, interval='minute240', count=500)
+
+        if df is None or len(df) < 200:
+            print(f"⚠️ {coin}: 데이터 부족")
+            return
+
+        current_price = df.iloc[-1]['close']
+        score = self.calculate_momentum_score(df)
+
+        print(f"\n{'='*60}")
+        print(f"🪙 {coin} 분석")
+        print(f"{'='*60}")
+        print(f"현재가: {current_price:,.0f}원")
+        print(f"모멘텀 스코어: {score}점")
+
+        # Layer별 실행
+        self.execute_buy_hold(coin, market, df)
+        self.execute_momentum_trend(coin, market, df, score)
+        self.execute_momentum_swing(coin, market, df, score)
+        self.execute_volatility(coin, market, df)
+
+
+    def execute_buy_hold(self, coin, market, df):
+        """
+        Buy & Hold Layer (60%)
+
+        전략:
+        - 최초 1회 매수
+        - 절대 매도 안 함
+        - 가장 안정적인 기반
+        """
+        pos = self.positions[coin]['buy_hold']
+
+        # 포지션 없으면 매수
+        if pos is None:
+            # 해당 코인 배분 자본의 60%
+            target_amount = self.initial_balance * self.coin_allocation[coin] * 0.60
+
+            # 현재 KRW 잔고
+            krw_balance = self.upbit.get_balance('KRW')
+
+            if krw_balance >= target_amount:
+                # 매수
+                order = self.upbit.buy_market_order(market, target_amount * 0.9995)  # 수수료 고려
+
+                if order:
+                    self.positions[coin]['buy_hold'] = {
+                        'entry_price': df.iloc[-1]['close'],
+                        'entry_time': str(datetime.now()),
+                        'layer': 'buy_hold'
+                    }
+                    self.save_positions()
+                    print(f"✅ BUY & HOLD 매수: {target_amount:,.0f}원")
+
+
+    def execute_momentum_trend(self, coin, market, df, score):
+        """
+        Momentum Trend Layer (25%)
+
+        전략:
+        - 스코어 80점 이상: 진입
+        - 스코어 50점 이하: 청산
+        - 손절: 20일 저점 -2%
+        """
+        pos = self.positions[coin]['momentum_trend']
+        current_price = df.iloc[-1]['close']
+
+        # 진입
+        if pos is None and score >= 80:
+            target_amount = self.initial_balance * self.coin_allocation[coin] * 0.25
+            krw_balance = self.upbit.get_balance('KRW')
+
+            if krw_balance >= target_amount:
+                # 손절가 계산
+                recent_low = df['low'].iloc[-20:].min()
+                stop_loss = recent_low * 0.98
+
+                order = self.upbit.buy_market_order(market, target_amount * 0.9995)
+
+                if order:
+                    self.positions[coin]['momentum_trend'] = {
+                        'entry_price': current_price,
+                        'entry_time': str(datetime.now()),
+                        'stop_loss': stop_loss,
+                        'entry_score': score,
+                        'layer': 'momentum_trend'
+                    }
+                    self.save_positions()
+                    print(f"✅ MOMENTUM TREND 매수: {target_amount:,.0f}원 (스코어: {score})")
+
+        # 청산
+        elif pos is not None:
+            should_exit = (score <= 50) or (current_price <= pos['stop_loss'])
+
+            if should_exit:
+                # 보유 수량 조회
+                balance = self.upbit.get_balance(coin)
+
+                if balance and balance > 0:
+                    order = self.upbit.sell_market_order(market, balance)
+
+                    if order:
+                        profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+                        print(f"✅ MOMENTUM TREND 매도: 수익률 {profit_pct:+.2f}%")
+
+                        self.positions[coin]['momentum_trend'] = None
+                        self.save_positions()
+
+            # 트레일링 손절
+            elif current_price > pos['entry_price'] * 1.05:
+                new_stop = max(pos['stop_loss'], pos['entry_price'] * 1.02)
+                self.positions[coin]['momentum_trend']['stop_loss'] = new_stop
+                self.save_positions()
+
+
+    def execute_momentum_swing(self, coin, market, df, score):
+        """
+        Momentum Swing Layer (10%)
+
+        전략:
+        - 스코어 60-80점: 진입
+        - 스코어 45점 이하 or +15% 익절: 청산
+        """
+        pos = self.positions[coin]['momentum_swing']
+        current_price = df.iloc[-1]['close']
+
+        # 진입
+        if pos is None and 60 <= score < 80:
+            target_amount = self.initial_balance * self.coin_allocation[coin] * 0.10
+            krw_balance = self.upbit.get_balance('KRW')
+
+            if krw_balance >= target_amount:
+                recent_low = df['low'].iloc[-10:].min()
+                stop_loss = recent_low * 0.97
+
+                order = self.upbit.buy_market_order(market, target_amount * 0.9995)
+
+                if order:
+                    self.positions[coin]['momentum_swing'] = {
+                        'entry_price': current_price,
+                        'entry_time': str(datetime.now()),
+                        'stop_loss': stop_loss,
+                        'layer': 'momentum_swing'
+                    }
+                    self.save_positions()
+                    print(f"✅ MOMENTUM SWING 매수: {target_amount:,.0f}원")
+
+        # 청산
+        elif pos is not None:
+            should_exit = (score <= 45) or (current_price <= pos['stop_loss'])
+            profit_target = current_price >= pos['entry_price'] * 1.15
+
+            if should_exit or profit_target:
+                balance = self.upbit.get_balance(coin)
+
+                if balance and balance > 0:
+                    order = self.upbit.sell_market_order(market, balance)
+
+                    if order:
+                        profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+                        print(f"✅ MOMENTUM SWING 매도: 수익률 {profit_pct:+.2f}%")
+
+                        self.positions[coin]['momentum_swing'] = None
+                        self.save_positions()
+
+
+    def execute_volatility(self, coin, market, df):
+        """
+        Volatility Breakout Layer (5%)
+
+        전략:
+        - 14일 고점 돌파 + 거래량 급증
+        - 손절: -1.5 ATR
+        - 익절: +3 ATR
+        """
+        pos = self.positions[coin]['volatility']
+        current_price = df.iloc[-1]['close']
+
+        # 진입
+        if pos is None:
+            high_14 = df['high'].iloc[-14:-1].max()
+            vol_ma20 = df['volume'].iloc[-20:].mean()
+            volume_surge = df.iloc[-1]['volume'] > vol_ma20 * 1.3
+
+            if current_price > high_14 and volume_surge:
+                target_amount = self.initial_balance * self.coin_allocation[coin] * 0.05
+                krw_balance = self.upbit.get_balance('KRW')
+
+                if krw_balance >= target_amount:
+                    atr = self.calculate_atr(df)
+
+                    order = self.upbit.buy_market_order(market, target_amount * 0.9995)
+
+                    if order:
+                        self.positions[coin]['volatility'] = {
+                            'entry_price': current_price,
+                            'entry_time': str(datetime.now()),
+                            'stop_loss': current_price - atr * 1.5,
+                            'target': current_price + atr * 3,
+                            'layer': 'volatility'
                         }
+                        self.save_positions()
+                        print(f"✅ VOLATILITY 매수: {target_amount:,.0f}원")
+
+        # 청산
+        elif pos is not None:
+            if current_price >= pos['target'] or current_price <= pos['stop_loss']:
+                balance = self.upbit.get_balance(coin)
+
+                if balance and balance > 0:
+                    order = self.upbit.sell_market_order(market, balance)
+
+                    if order:
+                        profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
+                        reason = 'target' if current_price >= pos['target'] else 'stop'
+                        print(f"✅ VOLATILITY 매도: 수익률 {profit_pct:+.2f}% ({reason})")
+
+                        self.positions[coin]['volatility'] = None
+                        self.save_positions()
+
+
+    def rebalance(self):
+        """
+        동적 리밸런싱 (월 1회)
+
+        핵심:
+        - 각 코인이 목표 비중(20%)에서 벗어나면 조정
+        - 우수 코인에서 이익 실현
+        - 저조 코인에 재투자
+        """
+        print("\n" + "="*80)
+        print("📊 리밸런싱 실행")
+        print("="*80)
+
+        # 현재 총 자산
+        total_balance = self.get_total_balance()
+        print(f"현재 총 자산: {total_balance:,.0f}원")
+
+        # 각 코인의 현재 비중 계산
+        for coin in self.coins:
+            market = f'KRW-{coin}'
+            balance = self.upbit.get_balance(coin)
+            price = pyupbit.get_current_price(market)
+
+            if balance and price:
+                current_value = balance * price
+                current_weight = current_value / total_balance
+                target_weight = self.coin_allocation[coin]
+
+                print(f"{coin}: 현재 {current_weight*100:.1f}% → 목표 {target_weight*100:.1f}%")
+
+                # 5% 이상 차이나면 조정
+                if abs(current_weight - target_weight) > 0.05:
+                    diff = target_weight - current_weight
+                    adjust_amount = total_balance * abs(diff)
+
+                    if diff > 0:  # 매수 필요
+                        krw = self.upbit.get_balance('KRW')
+                        if krw >= adjust_amount:
+                            self.upbit.buy_market_order(market, adjust_amount * 0.9995)
+                            print(f"  → {adjust_amount:,.0f}원 매수")
+                    else:  # 매도 필요
+                        sell_amount = adjust_amount / price
+                        if balance >= sell_amount:
+                            self.upbit.sell_market_order(market, sell_amount)
+                            print(f"  → {adjust_amount:,.0f}원 매도")
+
+        self.last_rebalance = datetime.now()
+        print("✅ 리밸런싱 완료\n")
 
-                        self.telegram.send(
-                            f"⚠️ 기존 포지션 발견\n"
-                            f"코인: {currency}\n"
-                            f"평균 매수가: {avg_buy_price:,.0f}원\n"
-                            f"현재 수익률: {profit_pct:.2f}%"
-                        )
-        except Exception as e:
-            print(f"❌ 기존 포지션 확인 실패: {e}")
-
-    def get_current_price(self, market):
-        """현재가 조회"""
-        try:
-            ticker = self.upbit.get_ticker(market)
-            if ticker:
-                return float(ticker['trade_price'])
-        except:
-            pass
-        return None
-
-    def fetch_candles(self, timeframe_minutes, count=200):
-        """캔들 데이터 수집"""
-        try:
-            url = f"https://api.upbit.com/v1/candles/minutes/{timeframe_minutes}"
-            params = {'market': self.market, 'count': count}
-            response = requests.get(url, params=params, timeout=10)
-
-            if response.status_code == 200:
-                candles = response.json()
-                # 최신 데이터가 먼저 오므로 역순 정렬
-                candles.reverse()
-
-                df = pd.DataFrame({
-                    'timestamp': pd.to_datetime([c['candle_date_time_kst'] for c in candles]),
-                    'open': [c['opening_price'] for c in candles],
-                    'high': [c['high_price'] for c in candles],
-                    'low': [c['low_price'] for c in candles],
-                    'close': [c['trade_price'] for c in candles],
-                    'volume': [c['candle_acc_trade_volume'] for c in candles]
-                })
-
-                return df
-        except Exception as e:
-            print(f"❌ 캔들 데이터 수집 실패: {e}")
-
-        return None
-
-    def update_daily_range(self):
-        """09:00~13:00 KST 4시간 레인지 업데이트"""
-        now = datetime.now()
-        current_date = now.date()
-
-        # 날짜 변경 시 초기화
-        if self.current_date != current_date:
-            self.current_date = current_date
-            self.daily_losses = 0
-            self.daily_trades = 0
-            self.range_high = None
-            self.range_low = None
-            self.has_broken_out = False
-            self.breakout_direction = None
-            self.breakout_high = None
-            self.breakout_low = None
-
-        # 13:00 이후에만 레인지 설정
-        if now.hour < 13:
-            return
-
-        # 레인지가 이미 설정되었으면 리턴
-        if self.range_high is not None and self.range_low is not None:
-            return
-
-        # 240분봉(4시간) 데이터 가져오기
-        df_4h = self.fetch_candles(timeframe_minutes=240, count=10)
-        if df_4h is None or len(df_4h) == 0:
-            return
-
-        # 오늘 09:00 시작하는 캔들 찾기
-        target_candles = df_4h[
-            (df_4h['timestamp'].dt.date == current_date) &
-            (df_4h['timestamp'].dt.hour == 9)
-        ]
-
-        if len(target_candles) > 0:
-            candle = target_candles.iloc[0]
-            self.range_high = candle['high']
-            self.range_low = candle['low']
-
-            print(f"\n📊 4시간 레인지 설정 (09:00~13:00)")
-            print(f"   고점: {self.range_high:,.0f}원")
-            print(f"   저점: {self.range_low:,.0f}원")
-            print(f"   범위: {((self.range_high - self.range_low) / self.range_low * 100):.2f}%\n")
-
-            self.telegram.send(
-                f"📊 4시간 레인지 설정\n"
-                f"고점: {self.range_high:,.0f}원\n"
-                f"저점: {self.range_low:,.0f}원"
-            )
-
-    def is_trading_hours(self):
-        """거래 가능 시간인지 확인 (13:00 ~ 22:00 KST)"""
-        hour = datetime.now().hour
-        return 13 <= hour < 22
-
-    def check_entry_signal(self, current_price):
-        """진입 시그널 확인"""
-        if self.range_high is None or self.range_low is None:
-            return None
-
-        # 이탈 확인
-        if not self.has_broken_out:
-            # 상단 이탈
-            if current_price > self.range_high:
-                self.has_broken_out = True
-                self.breakout_direction = 'up'
-                self.breakout_high = current_price
-                print(f"🔼 상단 이탈: {current_price:,.0f}원 (레인지 고점: {self.range_high:,.0f}원)")
-            # 하단 이탈
-            elif current_price < self.range_low:
-                self.has_broken_out = True
-                self.breakout_direction = 'down'
-                self.breakout_low = current_price
-                print(f"🔽 하단 이탈: {current_price:,.0f}원 (레인지 저점: {self.range_low:,.0f}원)")
-        else:
-            # 이탈 중 극값 갱신
-            if self.breakout_direction == 'up':
-                self.breakout_high = max(self.breakout_high, current_price)
-            else:
-                self.breakout_low = min(self.breakout_low, current_price)
-
-        # 재진입 확인
-        if self.has_broken_out:
-            # 상단 이탈 후 재진입 → Short (업비트는 Short 불가능하므로 매수 안 함)
-            if self.breakout_direction == 'up' and self.range_low <= current_price <= self.range_high:
-                print(f"⚠️ Short 시그널 (업비트는 Short 불가) - 패스")
-                return None
-
-            # 하단 이탈 후 재진입 → Long
-            elif self.breakout_direction == 'down' and self.range_low <= current_price <= self.range_high:
-                # 과도한 변동성 필터
-                range_size = self.range_high - self.range_low
-                breakout_body = abs(self.breakout_low - self.range_low)
-
-                if breakout_body > range_size * 0.5:
-                    print(f"⚠️ 과도한 변동성 - 진입 스킵")
-                    return None
-
-                print(f"✅ Long 재진입 시그널: {current_price:,.0f}원")
-                return 'long'
-
-        return None
-
-    def calculate_position_params(self, direction, entry_price):
-        """손절/익절가 계산"""
-        if direction == 'long':
-            stop_loss = self.breakout_low
-        else:
-            stop_loss = self.breakout_high
-
-        # 손절폭 확인
-        stop_loss_pct = abs((stop_loss - entry_price) / entry_price) * 100
-
-        # 손절폭이 0.6% 이상이면 0.5%로 제한
-        if stop_loss_pct >= 0.6:
-            stop_loss = entry_price * 0.995  # -0.5%
-
-        # 익절가 (2R)
-        risk = abs(entry_price - stop_loss)
-        take_profit = entry_price + (risk * 2)
-
-        return stop_loss, take_profit
-
-    def execute_buy(self, current_price):
-        """매수 실행"""
-        try:
-            # 거래 가능한 잔고
-            available_balance = self.balance_krw if self.dry_run else self.get_krw_balance()
-
-            if available_balance < 5000:
-                print("❌ 잔고 부족 (최소 5,000원 필요)")
-                return False
-
-            # 전액 매수
-            buy_amount = available_balance * 0.995  # 수수료 고려
-
-            if self.dry_run:
-                # 시뮬레이션
-                quantity = buy_amount / current_price
-                self.balance_krw = 0
-
-                print(f"\n💰 [시뮬] 매수 체결")
-                print(f"   가격: {current_price:,.0f}원")
-                print(f"   수량: {quantity:.8f}")
-                print(f"   금액: {buy_amount:,.0f}원")
-            else:
-                # 실거래
-                currency = self.market.split('-')[1]
-                result = self.upbit.buy_market_order(self.market, buy_amount)
-
-                if result and 'uuid' in result:
-                    time.sleep(0.5)
-                    order_info = self.upbit.get_order(result['uuid'])
-
-                    if order_info and order_info['state'] == 'done':
-                        quantity = float(order_info['executed_volume'])
-                        avg_price = float(order_info['trades'][0]['price']) if order_info.get('trades') else current_price
-
-                        print(f"\n💰 매수 체결")
-                        print(f"   가격: {avg_price:,.0f}원")
-                        print(f"   수량: {quantity:.8f}")
-                        print(f"   금액: {buy_amount:,.0f}원")
-
-                        current_price = avg_price
-                    else:
-                        print("❌ 매수 주문 체결 확인 실패")
-                        return False
-                else:
-                    print("❌ 매수 주문 실패")
-                    return False
-
-                quantity = buy_amount / current_price
-
-            # 손절/익절가 계산
-            stop_loss, take_profit = self.calculate_position_params('long', current_price)
-
-            # 포지션 저장
-            self.position = {
-                'direction': 'long',
-                'entry_price': current_price,
-                'entry_time': datetime.now(),
-                'quantity': quantity,
-                'stop_loss': stop_loss,
-                'take_profit': take_profit
-            }
-
-            self.daily_trades += 1
-
-            msg = (
-                f"✅ 매수 완료\n"
-                f"가격: {current_price:,.0f}원\n"
-                f"수량: {quantity:.8f}\n"
-                f"손절: {stop_loss:,.0f}원\n"
-                f"익절: {take_profit:,.0f}원"
-            )
-            self.telegram.send(msg)
-
-            return True
-
-        except Exception as e:
-            print(f"❌ 매수 실행 실패: {e}")
-            return False
-
-    def execute_sell(self, current_price, reason):
-        """매도 실행"""
-        if self.position is None:
-            return False
-
-        try:
-            quantity = self.position['quantity']
-
-            if self.dry_run:
-                # 시뮬레이션
-                sell_amount = quantity * current_price
-                self.balance_krw += sell_amount
-
-                print(f"\n💵 [시뮬] 매도 체결 ({reason})")
-                print(f"   가격: {current_price:,.0f}원")
-                print(f"   수량: {quantity:.8f}")
-                print(f"   금액: {sell_amount:,.0f}원")
-            else:
-                # 실거래
-                result = self.upbit.sell_market_order(self.market, quantity)
-
-                if result and 'uuid' in result:
-                    time.sleep(0.5)
-                    order_info = self.upbit.get_order(result['uuid'])
-
-                    if order_info and order_info['state'] == 'done':
-                        avg_price = float(order_info['trades'][0]['price']) if order_info.get('trades') else current_price
-
-                        print(f"\n💵 매도 체결 ({reason})")
-                        print(f"   가격: {avg_price:,.0f}원")
-                        print(f"   수량: {quantity:.8f}")
-
-                        current_price = avg_price
-                    else:
-                        print("❌ 매도 주문 체결 확인 실패")
-                        return False
-                else:
-                    print("❌ 매도 주문 실패")
-                    return False
-
-            # 손익 계산
-            entry_price = self.position['entry_price']
-            profit = (current_price - entry_price) * quantity
-            profit_pct = ((current_price - entry_price) / entry_price) * 100
-
-            # 거래 기록
-            self.trades.append({
-                'entry_time': self.position['entry_time'],
-                'exit_time': datetime.now(),
-                'entry_price': entry_price,
-                'exit_price': current_price,
-                'profit': profit,
-                'profit_pct': profit_pct,
-                'reason': reason
-            })
-
-            # 손절 카운트
-            if reason == '손절':
-                self.daily_losses += 1
-
-            # 포지션 초기화
-            self.position = None
-
-            msg = (
-                f"✅ 매도 완료 ({reason})\n"
-                f"진입: {entry_price:,.0f}원\n"
-                f"청산: {current_price:,.0f}원\n"
-                f"수익: {profit:,.0f}원 ({profit_pct:+.2f}%)\n"
-                f"누적 거래: {len(self.trades)}회"
-            )
-            self.telegram.send(msg)
-
-            return True
-
-        except Exception as e:
-            print(f"❌ 매도 실행 실패: {e}")
-            return False
-
-    def check_exit_signal(self, current_price):
-        """청산 시그널 확인"""
-        if self.position is None:
-            return None
-
-        direction = self.position['direction']
-        stop_loss = self.position['stop_loss']
-        take_profit = self.position['take_profit']
-
-        if direction == 'long':
-            if current_price <= stop_loss:
-                return '손절'
-            elif current_price >= take_profit:
-                return '익절'
-
-        return None
-
-    def get_krw_balance(self):
-        """KRW 잔고 조회"""
-        try:
-            accounts = self.upbit.get_accounts()
-            for account in accounts:
-                if account['currency'] == 'KRW':
-                    return float(account['balance'])
-        except:
-            pass
-        return 0
-
-    def print_status(self):
-        """현재 상태 출력"""
-        current_balance = self.get_account_balance() if not self.dry_run else self.balance_krw
-        profit = current_balance - self.initial_balance
-        profit_pct = (profit / self.initial_balance) * 100
-
-        status = f"\n{'='*60}\n"
-        status += f"📊 현재 상태 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})\n"
-        status += f"{'='*60}\n"
-        status += f"마켓: {self.market}\n"
-        status += f"초기 자본: {self.initial_balance:,.0f}원\n"
-        status += f"현재 자산: {current_balance:,.0f}원\n"
-        status += f"수익: {profit:,.0f}원 ({profit_pct:+.2f}%)\n"
-        status += f"총 거래: {len(self.trades)}회\n"
-        status += f"오늘 거래: {self.daily_trades}/3회\n"
-        status += f"오늘 손절: {self.daily_losses}/2회\n"
-
-        if self.range_high and self.range_low:
-            status += f"\n4시간 레인지:\n"
-            status += f"  고점: {self.range_high:,.0f}원\n"
-            status += f"  저점: {self.range_low:,.0f}원\n"
-
-        if self.position:
-            current_price = self.get_current_price(self.market)
-            if current_price:
-                profit = (current_price - self.position['entry_price']) * self.position['quantity']
-                profit_pct = ((current_price - self.position['entry_price']) / self.position['entry_price']) * 100
-
-                status += f"\n포지션:\n"
-                status += f"  방향: {self.position['direction'].upper()}\n"
-                status += f"  진입가: {self.position['entry_price']:,.0f}원\n"
-                status += f"  현재가: {current_price:,.0f}원\n"
-                status += f"  수익: {profit:,.0f}원 ({profit_pct:+.2f}%)\n"
-                status += f"  손절: {self.position['stop_loss']:,.0f}원\n"
-                status += f"  익절: {self.position['take_profit']:,.0f}원\n"
-        else:
-            status += f"\n포지션: 없음\n"
-
-        status += f"{'='*60}\n"
-        print(status)
-        self.telegram.send(status)
 
     def run(self):
-        """봇 실행"""
-        print("\n🤖 봇 시작...\n")
+        """
+        봇 메인 루프
 
-        # 봇 시작 시 stop_requested 플래그 초기화
-        self.telegram.stop_requested = False
+        실행 주기:
+        - 전략 체크: 4시간마다
+        - 리밸런싱: 월 1회
+        """
+        print("\n" + "="*80)
+        print("🚀 자동매매 봇 시작")
+        print("="*80)
+        print(f"거래 코인: {', '.join(self.coins)}")
+        print(f"체크 주기: 4시간")
+        print("="*80 + "\n")
 
-        try:
-            while self.running and not self.telegram.stop_requested:
-                # 텔레그램 명령어 확인
-                command = self.telegram.check_commands()
-                if command == 'stop':
-                    print("\n🛑 정지 명령 수신")
-                    self.telegram.send("🛑 봇을 정지합니다.")
-                    break
-                elif command == '/status':
-                    self.print_status()
-                elif command == '/help':
-                    help_msg = (
-                        "📖 명령어 도움말\n\n"
-                        "/status - 현재 상태 확인\n"
-                        "/stop - 봇 중지\n"
-                        "/help - 도움말"
-                    )
-                    self.telegram.send(help_msg)
+        while True:
+            try:
+                print(f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-                # 4시간 레인지 업데이트
-                self.update_daily_range()
+                # 각 코인별 전략 실행
+                for coin in self.coins:
+                    self.execute_strategy(coin)
+                    time.sleep(1)  # API 제한
 
-                # 거래 가능 시간 확인
-                if not self.is_trading_hours():
-                    time.sleep(60)
-                    continue
+                # 리밸런싱 체크 (월 1회)
+                if self.last_rebalance is None or \
+                   (datetime.now() - self.last_rebalance).days >= 30:
+                    self.rebalance()
 
-                # 연속 2손절 또는 하루 3회 거래 제한
-                if self.daily_losses >= 2 or self.daily_trades >= 3:
-                    time.sleep(60)
-                    continue
+                # 현재 총 자산 출력
+                total = self.get_total_balance()
+                profit = total - self.initial_balance
+                profit_pct = (profit / self.initial_balance) * 100
 
-                # 현재가 조회
-                current_price = self.get_current_price(self.market)
-                if current_price is None:
-                    time.sleep(10)
-                    continue
+                print(f"\n{'='*80}")
+                print(f"💰 현재 총 자산: {total:,.0f}원")
+                print(f"📈 수익: {profit:+,.0f}원 ({profit_pct:+.2f}%)")
+                print(f"{'='*80}\n")
 
-                # 포지션 없을 때 진입 확인
-                if self.position is None:
-                    entry_signal = self.check_entry_signal(current_price)
+                # 4시간 대기
+                print("😴 다음 체크까지 4시간 대기...")
+                time.sleep(4 * 60 * 60)  # 4시간
 
-                    if entry_signal == 'long':
-                        self.execute_buy(current_price)
+            except Exception as e:
+                print(f"❌ 오류 발생: {e}")
+                import traceback
+                traceback.print_exc()
+                print("⏱️ 10분 후 재시도...")
+                time.sleep(600)
 
-                # 포지션 있을 때 청산 확인
-                else:
-                    exit_signal = self.check_exit_signal(current_price)
 
-                    if exit_signal:
-                        self.execute_sell(current_price, exit_signal)
+def main():
+    """메인 함수"""
+    print("="*80)
+    print("🤖 실전 자동매매 봇 설정")
+    print("="*80)
 
-                # 30초 대기
-                time.sleep(30)
+    # API 키 입력
+    access_key = input("Access Key: ").strip()
+    secret_key = input("Secret Key: ").strip()
 
-        except KeyboardInterrupt:
-            print("\n\n🛑 사용자에 의해 중지됨")
-            self.telegram.send("🛑 봇이 중지되었습니다.")
-        except Exception as e:
-            print(f"\n❌ 오류 발생: {e}")
-            self.telegram.send(f"❌ 오류 발생: {e}")
-        finally:
-            self.print_status()
-            print("\n✅ 봇 종료")
+    if not access_key or not secret_key:
+        print("❌ API 키를 입력하세요.")
+        return
+
+    # 봇 생성 및 실행
+    bot = LiveTradingBot(access_key, secret_key)
+
+    # 확인
+    print(f"\n현재 총 자산: {bot.get_total_balance():,.0f}원")
+    print(f"초기 자본으로 설정: {bot.initial_balance:,.0f}원")
+
+    confirm = input("\n봇을 시작하시겠습니까? (yes/no): ").strip().lower()
+
+    if confirm == 'yes':
+        bot.run()
+    else:
+        print("❌ 봇 시작 취소")
 
 
 if __name__ == "__main__":
-    # 환경 변수에서 API 키 읽기
-    ACCESS_KEY = os.getenv('UPBIT_ACCESS_KEY')
-    SECRET_KEY = os.getenv('UPBIT_SECRET_KEY')
-    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-
-    if not ACCESS_KEY or not SECRET_KEY:
-        print("❌ 업비트 API 키가 설정되지 않았습니다.")
-        print("export UPBIT_ACCESS_KEY='your_access_key'")
-        print("export UPBIT_SECRET_KEY='your_secret_key'")
-        sys.exit(1)
-
-    # 봇 실행
-    bot = Upbit4HRangeBot(
-        access_key=ACCESS_KEY,
-        secret_key=SECRET_KEY,
-        market='KRW-BTC',  # 비트코인 (365일 백테스트: +18.44%, PF 1.26, 승률 43.4%)
-        telegram_token=TELEGRAM_TOKEN,
-        telegram_chat_id=TELEGRAM_CHAT_ID,
-        dry_run=False  # 실거래 모드
-    )
-
-    bot.run()
+    main()
